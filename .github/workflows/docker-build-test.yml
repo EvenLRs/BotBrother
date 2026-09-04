@@ -91,7 +91,7 @@ jobs:
               {"label": "ci-fake", "base": "http://172.17.0.1:3999", "token": "", "timeout": 3, "debounce": 2}
             ],
             "channels": [{"type": "log"}],
-            "webui": {"port": 8080, "bind": "0.0.0.0", "token": ""}
+            "webui": {"port": 8080, "bind": "0.0.0.0", "token": "ci-secret"}
           }
           JSON
 
@@ -106,7 +106,9 @@ jobs:
 
           # 5) 幕一：页面 + API 应在线
           curl -sf http://127.0.0.1:18080/ > /dev/null && echo "[PASS] webui page 200"
-          STATE=$(curl -sf http://127.0.0.1:18080/api/state | python3 -c "import sys,json;print(json.load(sys.stdin)['state'])")
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18080/api/state)
+          [ "$CODE" = "401" ] && echo "[PASS] api rejects without token (401)" || { echo "[FAIL] expected 401, got $CODE"; exit 1; }
+          STATE=$(curl -sf -H "Authorization: Bearer ci-secret" http://127.0.0.1:18080/api/state | python3 -c "import sys,json;print(json.load(sys.stdin)['state'])")
           [ "$STATE" = "online" ] && echo "[PASS] state=online" || { echo "[FAIL] state=$STATE"; exit 1; }
 
           # 6) 幕二：--once 健康检查（容器内直连假 OneBot 的 host 网络）
