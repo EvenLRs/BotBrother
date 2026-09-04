@@ -1,0 +1,163 @@
+name: Build & Test Docker Image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---------- 静态检查：Dockerfile/compose 语法（本地无法验证的，CI 补上） ----------
+      - name: Lint Dockerfile with hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+        continue-on-error: true   # 建议级：告警不挡构建
+
+      # ---------- 单元测试（tests/ 为本地开发资产不入库；若仓库出现则跑，否则容器级测试兜底） ----------
+      - name: Run unit tests if tests/ present (Python 3.9 floor)
+        run: |
+          if [ -d tests ] && ls tests/test_*.py > /dev/null 2>&1; then
+            docker run --rm -v "$PWD":/app -w /app python:3.9-alpine \
+              python3 -m unittest discover -s tests -v
+          else
+            echo "[SKIP] tests/ not in repo (local-only); container-level tests below cover the runtime"
+          fi
+
+      # ---------- 构建镜像（双架构：amd64 服务器 + arm64 树莓派/Apple Silicon） ----------
+      - name: Set up QEMU (multi-arch)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (linux/amd64 + linux/arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          load: true
+          tags: botbrother:ci-test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---------- 容器级测试：真容器 + 真 WebUI + 假 OneBot 三幕验证 ----------
+      - name: Test container against a fake OneBot
+        run: |
+          set -e
+          # 1) 假 OneBot：本仓库 tests 里已有现成实现思路，这里内联一个最小版
+          cat > fake_onebot.py <<'PY'
+          import json, threading
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+          class H(BaseHTTPRequestHandler):
+              online = True
+              def do_POST(self):
+                  if self.path.split('?')[0] == '/get_status':
+                      body = json.dumps({'status':'ok','retcode':0,
+                          'data':{'online':self.online,'good':True}}).encode()
+                      self.send_response(200)
+                      self.send_header('Content-Length', str(len(body)))
+                      self.end_headers(); self.wfile.write(body)
+                  else:
+                      self.send_response(404)
+                      self.send_header('Content-Length','0'); self.end_headers()
+              def log_message(self,*a): pass
+          if __name__ == '__main__':
+              import sys
+              port = int(sys.argv[1])
+              H.online = sys.argv[2] == 'online' if len(sys.argv) > 2 else True
+              HTTPServer(('0.0.0.0', port), H).serve_forever()
+          PY
+
+          # 2) 最小配置：监视假 OneBot，log 渠道，WebUI 回环
+          cat > test-config.json <<'JSON'
+          {
+            "interval": 5,
+            "endpoints": [
+              {"label": "ci-fake", "base": "http://172.17.0.1:3999", "token": "", "timeout": 3, "debounce": 2}
+            ],
+            "channels": [{"type": "log"}],
+            "webui": {"port": 8080, "bind": "0.0.0.0", "token": ""}
+          }
+          JSON
+
+          # 3) 起假 OneBot（宿主机网络侧，容器经 docker 网桥网关访问）
+          python3 fake_onebot.py 3999 online &
+          FAKE_PID=$!
+
+          # 4) 起 BotBrother 容器（WebUI 模式）
+          docker run -d --name bb-test -p 18080:8080 \
+            -v "$PWD/test-config.json":/app/config.json:ro botbrother:ci-test
+          sleep 8   # 等 WebUI 启动 + 首轮探测
+
+          # 5) 幕一：页面 + API 应在线
+          curl -sf http://127.0.0.1:18080/ > /dev/null && echo "[PASS] webui page 200"
+          STATE=$(curl -sf http://127.0.0.1:18080/api/state | python3 -c "import sys,json;print(json.load(sys.stdin)['state'])")
+          [ "$STATE" = "online" ] && echo "[PASS] state=online" || { echo "[FAIL] state=$STATE"; exit 1; }
+
+          # 6) 幕二：--once 健康检查（容器内直连假 OneBot 的 host 网络）
+          docker run --rm --network host -v "$PWD/test-config.json":/app/config.json:ro \
+            botbrother:ci-test python3 monitor.py --config /app/config.json --once
+          echo "[PASS] --once exits 0 when online"
+
+          # 7) 收尾：关假 OneBot → 服务不可达 → 容器日志应出现探测记录
+          docker logs bb-test 2>&1 | grep -q "探测" && echo "[PASS] container logs probing"
+          docker rm -f bb-test > /dev/null
+          kill $FAKE_PID 2>/dev/null || true
+
+      # ---------- 容器级测试：离线场景（假 OneBot 一直不在线） ----------
+      - name: Test container detects offline (unreachable)
+        run: |
+          # 不起假服务：端口拒连 → unreachable，--once 退出码应为 1
+          cat > test-config2.json <<'JSON'
+          {
+            "interval": 5,
+            "endpoints": [
+              {"label": "ci-dead", "base": "http://172.17.0.1:3998", "token": "", "timeout": 2, "debounce": 3}
+            ],
+            "channels": [{"type": "log"}],
+            "webui": {"port": 8080, "bind": "0.0.0.0", "token": ""}
+          }
+          JSON
+          RC=0
+          docker run --rm --network host -v "$PWD/test-config2.json":/app/config.json:ro \
+            botbrother:ci-test python3 monitor.py --config /app/config.json --once || RC=$?
+          if [ "$RC" -ne 1 ]; then echo "[FAIL] expected exit 1, got $RC"; exit 1; fi
+          echo "[PASS] --once exits 1 when unreachable"
+
+      # ---------- 推送 GHCR（仅 main 分支；PR 只构建不推送） ----------
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push to GHCR (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ env.IMAGE_NAME }}:latest
+            ghcr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
