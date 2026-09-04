@@ -67,12 +67,14 @@ docker logs -f botbrother
 
 <details>
 <summary>启动命令示例</summary>
+  
 ```bash
 python3 monitor.py --config config.json              # 常驻轮询，日志写 stdout
 python3 monitor.py --config config.json --webui      # 与WebUI一同启动
 python3 monitor.py --config config.json --once       # 单轮探测，退出码 0=在线 1=异常（健康检查用）
 python3 monitor.py --config config.json --test-alert # 向所有渠道发测试通知
 ```
+
 </details>
 
 ## 配置
