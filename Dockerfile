@@ -4,7 +4,7 @@ FROM python:3.12-alpine
 RUN addgroup -S botbrother && adduser -S botbrother -G botbrother
 WORKDIR /app
 
-COPY monitor.py probe.py statemachine.py channels.py /app/
+COPY monitor.py probe.py statemachine.py channels.py runtime.py webui.py webui.html /app/
 
 # HEALTHCHECK 用 --once：0=在线 1=异常（配置经挂载/env 提供）
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
