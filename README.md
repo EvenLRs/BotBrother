@@ -79,7 +79,7 @@ python3 monitor.py --config config.json --test-alert # 向所有渠道发测试�
 
 支持配置文件(`config.json`)和环境变量两种配置方式：
 
-###配置文件：
+### 配置文件：
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `interval` | 30 | 轮询间隔（秒），支持设置范围为5–86400 |
@@ -92,7 +92,7 @@ python3 monitor.py --config config.json --test-alert # 向所有渠道发测试�
 | `webui.bind` | `127.0.0.1` | 默认仅允许本机访问，设置为`0.0.0.0`后可允许局域网访问或外网访问（此场景建议设置token） |
 | `webui.token` | 空 | 管理令牌；设置后 API 需 `Authorization: Bearer <token>` |
 
-###环境变量：
+### 环境变量：
 | 变量名 | 默认 | 说明 |
 |---|---|---|
 | `QQMON_INTERVAL` | 30 | 轮询间隔（秒），支持设置范围为5–86400 |
@@ -104,11 +104,11 @@ python3 monitor.py --config config.json --test-alert # 向所有渠道发测试�
 <details>
 <summary>如何找到你的 probe.base（LLOneBot / NapCat / SnowLuma）</summary>
 
-####监视程序与 OneBot **在同一台机器**时：
+#### 监视程序与 OneBot **在同一台机器**时：
 - **NapCat**：WebUI → 网络配置 → 启用 HTTP 服务，看监听端口；本机默认 `http://127.0.0.1:3000`
 - **LLOneBot/LuckyLiliaBot**：QQ 设置 → OneBot11 → 启用 HTTP 服务器，看监听端口；本机默认 `http://127.0.0.1:3000`
 - **SnowLuma**：默认同为 3000
-####监视程序与 OneBot **不在同一台机器**时：
+#### 监视程序与 OneBot **不在同一台机器**时：
 - base 填 OneBot 机器的 IP，且 OneBot 的 HTTP 监听地址须为 `0.0.0.0` 或对应IP地址（默认 `127.0.0.1` 只接受本机连接）
 - 监听接口查询方式同上方
 
