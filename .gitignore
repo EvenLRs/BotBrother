@@ -23,6 +23,9 @@ htmlcov/
 venv/
 /test/
 /test
+# 测试套件仅限本地开发，不入库（历史已重写移除）
+/tests/
+/tests
 
 # ── 编辑器 / 系统 ──
 .DS_Store
