@@ -1,14 +1,24 @@
 """MonitorRuntime：监视循环的共享运行时（WebUI 与轮询线程的唯一数据源）。
 
+多端点支持（2026-09-04 迭代）：
+    配置里的 endpoints[] 列表定义多个被监视的 OneBot HTTP 服务端，
+    每个端点有独立的名字（label，用于报警文案与页面展示）、探测参数
+    和去抖轮数；运行时给每个端点维护独立的状态机、历史、计数。
+    旧单端点写法（probe{base,token,timeout}）自动转换成长度为 1 的
+    endpoints 列表——旧配置文件不改也能跑（向后兼容）。
+
+    监视循环 poll_loop 依次轮询所有端点（串行，每轮间隔 interval 秒）；
+    端点级超时/拒连各自独立计时，不会互相拖慢（串行轮询只叠加
+    各端点的探测耗时，总耗时 = Σtimeout 最坏情况）。
+
 程序结构（本模块是“状态中枢”）：
     MonitorRuntime 持有一切可变状态：
       - 配置 cfg（可被 WebUI 热更新）+ 落盘路径
-      - 当前探测状态 / 历史环形缓冲 / 通知记录
-      - 状态机实例 + 渠道实例列表
+      - 每端点的当前状态 / 历史环形缓冲 / 计数，聚合通知记录
+      - 每端点一个状态机实例 + 共享的渠道实例列表
     两条消费线共用一个实例、一把 RLock：
-      - poll_loop()  后台线程：每 interval 秒 probe → 状态机 → 发通知
-      - WebUI 线程池：读 snapshot()/masked_config()，写 update_config()/send_test_alert()
-    读多写少、块都极小，锁粒度够用；绝不存密钥明文进快照。
+      - poll_loop()  后台线程：每 interval 秒轮询全部端点
+      - WebUI 线程池：读 snapshot()/masked_config()，写 update_config()等
 
 安全设计（WebUI 密钥保护的三件套）：
       1. mask_secret()   API 回显一律 '****'+末4位
@@ -98,22 +108,41 @@ def _validate_config(incoming):
 
     out = {}
     out['interval'] = _int('interval（轮询间隔）', incoming.get('interval'), 5, 86400)
-    out['debounce'] = _int('debounce（去抖轮数）', incoming.get('debounce'), 1, 10)
 
-    p = incoming.get('probe')
-    if not isinstance(p, dict):
-        raise ValueError('probe 必须是对象')
-    base = p.get('base')
-    if not isinstance(base, str) or not (base.startswith('http://')
-                                         or base.startswith('https://')):
-        raise ValueError('probe.base 必须是 http:// 或 https:// 开头的地址')
-    token = p.get('token', '')
-    if token is None:
-        token = ''
-    if not isinstance(token, str):
-        raise ValueError('probe.token 必须是字符串')
-    out['probe'] = {'base': base, 'token': token,
-                    'timeout': _int('probe.timeout（超时）', p.get('timeout', 5), 1, 60)}
+    # 多端点：endpoints 数组，每项 base 必填、token/timeout/debounce/label 可选
+    eps = incoming.get('endpoints')
+    if not isinstance(eps, list) or not eps:
+        raise ValueError('endpoints 必须是非空数组（至少一个被监视端点）')
+    out_eps = []
+    for i, item in enumerate(eps):
+        if not isinstance(item, dict):
+            raise ValueError('endpoints[%d] 必须是对象' % i)
+        base = item.get('base')
+        if not isinstance(base, str) or not (base.startswith('http://')
+                                             or base.startswith('https://')):
+            raise ValueError('endpoints[%d].base 必须是 http:// 或 https:// 开头的地址' % i)
+        token = item.get('token', '')
+        if token is None:
+            token = ''
+        if not isinstance(token, str):
+            raise ValueError('endpoints[%d].token 必须是字符串' % i)
+        label = item.get('label') or base
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError('endpoints[%d].label 必须是非空字符串' % i)
+        out_eps.append({
+            'label': label,
+            'base': base,
+            'token': token,
+            'timeout': _int('endpoints[%d].timeout（超时）' % i,
+                            item.get('timeout', 5), 1, 60),
+            'debounce': _int('endpoints[%d].debounce（去抖）' % i,
+                             item.get('debounce', 3), 1, 10),
+        })
+    # 去重检查：同 base 同 token 只允许一次
+    keys = [(e['base'], e['token']) for e in out_eps]
+    if len(keys) != len(set(keys)):
+        raise ValueError('endpoints 存在重复项（同地址同令牌只能配一次）')
+    out['endpoints'] = out_eps
 
     chs = incoming.get('channels')
     if not isinstance(chs, list):
@@ -133,8 +162,12 @@ def _validate_config(incoming):
     w = incoming.get('webui') or {}
     if not isinstance(w, dict):
         raise ValueError('webui 必须是对象')
+    # port=0 是「系统分配」哨兵（测试/临时场景），放行；真实端口才卡 1-65535
+    port = w.get('port', 8080)
+    if port != 0:
+        port = _int('webui.port（端口）', port, 1, 65535)
     out['webui'] = {
-        'port': _int('webui.port（端口）', w.get('port', 8080), 1, 65535),
+        'port': port,
         'bind': (w.get('bind') or '127.0.0.1'),
         'token': (w.get('token') or ''),
     }
@@ -145,13 +178,69 @@ def _validate_config(incoming):
     return out
 
 
+class _EndpointState:
+    """单个端点的运行时状态（内部类，不外泄）。
+
+    每端点独立持有：状态机 / 当前状态 / 历史 / 计数——
+    这样端点 A 的去抖计数永远不会被端点 B 的轮询结果污染。
+    """
+
+    def __init__(self, label, debounce):
+        self.label = label            # 展示名（报警文案、WebUI）
+        self.sm = statemachine.MonitorStateMachine(debounce=debounce)
+        self.state = None            # online/offline/unreachable，None=尚未探测
+        self.state_detail = ''
+        self.state_since = None
+        self.last_probe_at = None
+        self.probe_count = 0
+        self.history = collections.deque(maxlen=MAX_HISTORY)
+
+
+def normalize_endpoints(cfg):
+    """把任意历史形态的端点配置统一成 endpoints 列表形态。
+
+    支持的输入（优先级从高到低）：
+      1. endpoints 数组（新多端点写法）：每项 {label?, base, token?, timeout?, debounce?}
+      2. 旧单端点写法：probe{base,token,timeout} + 顶层 debounce
+    返回统一列表，每项含全部字段（缺省值已填）；label 缺省用 base 本身。
+    """
+    if cfg.get('endpoints'):
+        eps = []
+        for i, item in enumerate(cfg['endpoints']):
+            if not isinstance(item, dict) or not item.get('base'):
+                raise ValueError('endpoints[%d] 缺少 base' % i)
+            eps.append({
+                'label': item.get('label') or item['base'],
+                'base': item['base'],
+                'token': item.get('token', ''),
+                'timeout': item.get('timeout', 5),
+                'debounce': item.get('debounce', cfg.get('debounce', 3)),
+            })
+        # 去重：同 base 同 token 只保留第一个
+        seen, deduped = set(), []
+        for e in eps:
+            key = (e['base'], e['token'])
+            if key not in seen:
+                seen.add(key)
+                deduped.append(e)
+        return deduped
+    # 旧单端点写法自动转换
+    p = cfg.get('probe') or {}
+    base = cfg.get('base') or p.get('base') or 'http://127.0.0.1:3000'
+    return [{
+        'label': p.get('label') or base,
+        'base': base,
+        'token': cfg.get('token', p.get('token', '')),
+        'timeout': cfg.get('timeout', p.get('timeout', 5)),
+        'debounce': cfg.get('debounce', 3),
+    }]
+
+
 class MonitorRuntime:
     """一次构建，长期运行；WebUI 与轮询线程共享（线程安全靠 self.lock）。
 
-    实例状态分三组：
-      配置组   cfg / config_path / auth_token —— update_config 热更新
-      运行组   state / state_detail / state_since / history —— poll_once 写
-      业务组   sm（状态机）/ channels（渠道列表）—— 热更新时整体重建
+    多端点：cfg['endpoints'] 定义端点列表；每端点一个 _EndpointState；
+    poll_once 依次探测全部端点，聚合进同一份通知记录与渠道列表。
     """
 
     def __init__(self, cfg, log_fn=None, config_path=None):
@@ -160,14 +249,10 @@ class MonitorRuntime:
         self.log = log_fn if log_fn is not None else _default_log
         self.lock = threading.RLock()
 
-        # 兼容两种 cfg 形态：monitor.load_config 的扁平键（base/token/timeout）
-        # 与磁盘上的嵌套 probe 对象。统一展开成运行时扁平视图，后续只读扁平键。
-        probe_cfg = cfg.get('probe') or {}
-        cfg.setdefault('base', probe_cfg.get('base', 'http://127.0.0.1:3000'))
-        cfg.setdefault('token', probe_cfg.get('token', ''))
-        cfg.setdefault('timeout', probe_cfg.get('timeout', 5))
+        # 端点归一化：新写法 endpoints[] 直接用；旧写法 probe{} 转 1 元素列表。
+        # 归一化结果写回 cfg，让 masked_config/validate/update 走同一条路。
+        cfg['endpoints'] = normalize_endpoints(cfg)
         cfg.setdefault('interval', 30)
-        cfg.setdefault('debounce', 3)
         cfg.setdefault('channels', [{'type': 'log'}])
 
         # webui 配置补默认值（缺省只听本机、不鉴权——安全默认）
@@ -178,46 +263,76 @@ class MonitorRuntime:
         cfg['webui'] = w
         self.auth_token = w['token']
 
-        self.sm = statemachine.MonitorStateMachine(debounce=cfg['debounce'])
         self.channels = channels_mod.build_channels(cfg['channels'], log=self.log)
 
-        # 运行状态初值（None=尚未探测过；首帧 WebUI 显示“未知”）
-        self.state = None
-        self.state_detail = ''
-        self.state_since = None
-        self.last_probe_at = None
-        self.probe_count = 0
+        # 每端点独立运行状态
+        self.endpoints = []           # [ _EndpointState ]，与 cfg['endpoints'] 同序
+        self._sync_endpoint_states()
         self.started_at = time.time()
-        self.history = collections.deque(maxlen=MAX_HISTORY)
+        # 聚合通知记录（所有端点共用，渠道是全局的）
         self.notifications = collections.deque(maxlen=MAX_NOTIFICATIONS)
+
+    def _sync_endpoint_states(self):
+        """按当前 cfg['endpoints'] 重建/保留端点状态。
+
+        热更新后：已有的端点（同 base 同 token）保留历史与计数，
+        新增的建新状态，删掉的丢弃——改地址/令牌视为新端点。
+        """
+        with self.lock:
+            old = {}
+            for e in self.endpoints:
+                old[(getattr(e, 'base', None), getattr(e, '_token', None))] = e
+            new_list = []
+            for item in self.cfg['endpoints']:
+                key = (item['base'], item['token'])
+                e = old.get(key)
+                if e is None:
+                    e = _EndpointState(item['label'], item['debounce'])
+                    e.base = item['base']
+                    e._token = item['token']
+                    e.timeout = item['timeout']
+                else:
+                    e.label = item['label']
+                    e.sm.debounce = item['debounce']
+                    e.timeout = item['timeout']
+                new_list.append(e)
+            self.endpoints = new_list
 
     # ==================== 轮询（监视主循环） ====================
 
     def poll_once(self):
-        """跑一轮：探测 → 更新运行状态 → 状态机 → 发通知。返回探测状态。
+        """跑一轮：逐端点探测 → 各自更新状态 → 各自状态机 → 发通知。
 
-        顺序刻意为之：先落历史记录，再发通知——通知失败不影响状态记录。
-        锁只罩“读配置”和“写状态”两个极小段，探测本身（可能秒级）不持锁，
-        避免 WebUI 请求被探测阻塞。
+        返回「最差端点状态」——全部在线才 online；任一不可达优先报 unreachable
+        （服务退出比账号下线更需要人立即处理）。CLI --once 沿用此语义。
+        顺序刻意为之：先落历史，再发通知——通知失败不影响状态记录。
+        锁只罩读写状态的小段，探测本身（可能秒级）不持锁。
         """
-        with self.lock:
-            base, token, timeout = self.cfg['base'], self.cfg['token'], self.cfg['timeout']
-        state, detail = probe.probe(base, token or None, timeout)
-        now = time.time()
-        with self.lock:
-            if state != self.state:
-                self.state_since = now      # 状态翻转时刻，UI 据此算“持续时长”
-            self.state = state
-            self.state_detail = detail
-            self.last_probe_at = now
-            self.probe_count += 1
-            self.history.append((now, state))
-        for title, body in self.sm.feed(state, detail):
-            self._notify(title, body)
-        return state
+        worst = probe.ONLINE
+        rank = {probe.ONLINE: 0, probe.OFFLINE: 1, probe.UNREACHABLE: 2}
+        for ep in list(self.endpoints):        # 快照一份，热更新不冲击本轮
+            with self.lock:
+                base, token, timeout = ep.base, ep._token, getattr(ep, 'timeout', 5)
+                label = ep.label
+            state, detail = probe.probe(base, token or None, timeout)
+            now = time.time()
+            with self.lock:
+                if state != ep.state:
+                    ep.state_since = now
+                ep.state = state
+                ep.state_detail = detail
+                ep.last_probe_at = now
+                ep.probe_count += 1
+                ep.history.append((now, state))
+            # 端点自己的状态机，报警文案带上端点名
+            for title, body in ep.sm.feed(state, detail, label):
+                self._notify(title, body)
+            if rank.get(state, 0) > rank.get(worst, 0):
+                worst = state
+        return worst
 
     def poll_loop(self):
-        """常驻轮询（WebUI 模式跑在后台线程里）。
+        """常驻轮询（WebUI 模式的后台线程）：每轮串行探测全部端点。
 
         单轮异常吃掉记日志继续——监视进程自己绝不能挂（否则谁来看门）。
         interval 每轮从配置现读，热更新改间隔下一轮就生效。
@@ -261,9 +376,10 @@ class MonitorRuntime:
     def send_test_alert(self):
         """发一条测试通知到所有渠道（结果同步进通知记录，页面上立刻可见）。"""
         with self.lock:
-            base = self.cfg['base']
+            eps = [e.label for e in self.endpoints]
+        target = '、'.join(eps) if eps else '（未配置端点）'
         return self._notify('QQ 监视测试通知',
-                            '如果你收到这条，说明 %s 的消息渠道配置是通的。' % base)
+                            '如果你收到这条，说明监视 %s 的消息渠道配置是通的。' % target)
 
     # ==================== 配置热更新 ====================
 
@@ -278,8 +394,20 @@ class MonitorRuntime:
             cur = self.cfg
             cur_channels = cur['channels']
 
-        # 掩码还原：提交值是回显掩码 → 保留原密钥（见 _unmask 文档）
-        token = _unmask(validated['probe']['token'], cur['token'])
+        # 端点 token 掩码还原：逐端点对位（同 base 同 token 视为未变）
+        cur_eps = {(e['base'], e.get('token', '')): e for e in cur.get('endpoints', [])}
+        new_endpoints = []
+        for item in validated['endpoints']:
+            item = dict(item)
+            old_ep = cur_eps.get((item['base'], item.get('token', '')))
+            if item.get('token') and old_ep is None:
+                # 新地址或改了 token：掩码可能对不上旧端点，尝试按 base 对位
+                by_base = {e['base']: e for e in cur.get('endpoints', [])}
+                old_ep = by_base.get(item['base'])
+            if item.get('token'):
+                old_token = old_ep.get('token', '') if old_ep else ''
+                item['token'] = _unmask(item['token'], old_token)
+            new_endpoints.append(item)
 
         # 渠道密钥逐项还原。对位规则：同类型渠道按出现序号一一对应
         # （配置里两个 bark，第 1 个对旧的第 1 个）——够用且无需额外 ID。
@@ -308,23 +436,20 @@ class MonitorRuntime:
         restart_required = (w['port'] != cur_port and cur_port != 0) \
             or (w['bind'] != cur['webui'].get('bind'))
 
-        # 应用：一次持锁写完全部字段；状态机与渠道列表整体重建（不可变换新，
-        # 避免半新半旧的中间态）。debounce 只换数字，状态机实例不重建。
+        # 应用：一次持锁写完全部字段；渠道列表整体重建（不可变换新，
+        # 避免半新半旧的中间态）；端点状态按 base+token 对位保留历史。
         with self.lock:
             cur['interval'] = validated['interval']
-            cur['debounce'] = validated['debounce']
-            cur['base'] = validated['probe']['base']
-            cur['token'] = token
-            cur['timeout'] = validated['probe']['timeout']
+            cur['endpoints'] = new_endpoints
             cur['channels'] = new_channels
             cur['webui'] = {'port': w['port'], 'bind': w['bind'], 'token': wtoken}
-            self.sm.debounce = validated['debounce']
+            self._sync_endpoint_states()
             self.channels = channels_mod.build_channels(new_channels, log=self.log)
             self.auth_token = wtoken
 
         self._persist(cur)
-        self.log('配置已通过 WebUI 更新（interval=%s，去抖=%s，渠道 %d 个）'
-                 % (validated['interval'], validated['debounce'], len(new_channels)))
+        self.log('配置已通过 WebUI 更新（interval=%s，端点 %d 个，渠道 %d 个）'
+                 % (validated['interval'], len(new_endpoints), len(new_channels)))
         return {'restart_required': restart_required}
 
     def _persist(self, cfg):
@@ -334,12 +459,10 @@ class MonitorRuntime:
         """
         if not self.config_path:
             return
-        # 运行时是扁平键，落盘还原成用户熟悉的嵌套结构
+        # 落盘统一用 endpoints 新结构（旧 probe 写法已被 __init__ 归一化）
         data = {
             'interval': cfg['interval'],
-            'probe': {'base': cfg['base'], 'token': cfg['token'],
-                      'timeout': cfg['timeout']},
-            'debounce': cfg['debounce'],
+            'endpoints': cfg['endpoints'],
             'channels': cfg['channels'],
             'webui': cfg['webui'],
         }
@@ -361,25 +484,39 @@ class MonitorRuntime:
     def snapshot(self):
         """实时状态快照（/api/state 的数据源）。绝不包含任何密钥明文。
 
-        history 截最近 120 帧（UI 色条一格一轮正好画满），
-        notifications 截最新 20 条（表格一页的量）。
+        多端点：endpoints 数组逐端点给出状态/历史；顶层 state 是聚合
+        最差值（保持旧字段兼容单端点页面），端点色条取自各端点 history。
         """
         with self.lock:
+            rank = {probe.ONLINE: 0, probe.OFFLINE: 1, probe.UNREACHABLE: 2}
+            worst, worst_ep = None, None
+            eps_out = []
+            for ep in self.endpoints:
+                if worst is None or rank.get(ep.state, 0) > rank.get(worst, 0):
+                    worst, worst_ep = ep.state, ep
+                eps_out.append({
+                    'label': ep.label,
+                    'base': ep.base,
+                    'state': ep.state,
+                    'state_detail': ep.state_detail,
+                    'state_since': ep.state_since,
+                    'last_probe_at': ep.last_probe_at,
+                    'probe_count': ep.probe_count,
+                    'history': list(ep.history)[-120:],
+                })
             return {
-                'state': self.state,
-                'state_detail': self.state_detail,
-                'state_since': self.state_since,
-                'last_probe_at': self.last_probe_at,
+                'state': worst_ep.state if worst_ep else None,
+                'state_detail': (worst_ep.state_detail if worst_ep else ''),
+                'state_since': (worst_ep.state_since if worst_ep else None),
+                'last_probe_at': (worst_ep.last_probe_at if worst_ep else None),
                 'uptime': time.time() - self.started_at,
-                'probe_count': self.probe_count,
                 'interval': self.cfg['interval'],
-                'debounce': self.cfg['debounce'],
-                'base': self.cfg['base'],
+                'base': '、'.join(e['label'] for e in self.cfg['endpoints']),
+                'endpoints': eps_out,
                 'channels_active': [c.name for c in self.channels],
                 'webui': {'port': self.cfg['webui']['port'],
                           'bind': self.cfg['webui']['bind'],
                           'auth_required': bool(self.auth_token)},
-                'history': list(self.history)[-120:],
                 'notifications': list(self.notifications)[:20],
             }
 
@@ -396,12 +533,15 @@ class MonitorRuntime:
                     if it.get(f):
                         it[f] = mask_secret(it[f])
                 channels_out.append(it)
+            eps_out = []
+            for item in self.cfg['endpoints']:
+                it = dict(item)
+                if it.get('token'):
+                    it['token'] = mask_secret(it['token'])
+                eps_out.append(it)
             return {
                 'interval': self.cfg['interval'],
-                'debounce': self.cfg['debounce'],
-                'probe': {'base': self.cfg['base'],
-                          'token': mask_secret(self.cfg['token']),
-                          'timeout': self.cfg['timeout']},
+                'endpoints': eps_out,
                 'channels': channels_out,
                 'webui': {'port': self.cfg['webui']['port'],
                           'bind': self.cfg['webui']['bind'],

@@ -197,12 +197,18 @@ def _make_handler(rt, server):
         # ---- CSV 导出 ----
 
         def _history_csv(self):
-            """探测历史导出：timestamp,state 两列，Excel 可直接开。"""
+            """探测历史导出：label,timestamp,state 三列（多端点各占一行），
+            Excel 可直接开、可按端点筛选。"""
             with rt.lock:
-                rows = list(rt.history)
-            lines = ['timestamp,state']
-            for ts, state in rows:
-                lines.append('%s,%s' % (ts, state))
+                rows = []
+                for ep in rt.endpoints:
+                    for ts, state in ep.history:
+                        rows.append((ep.label, ts, state))
+            lines = ['label,timestamp,state']
+            for label, ts, state in rows:
+                # CSV 转义：label 含逗号时包引号
+                safe_label = '"%s"' % label.replace('"', '""') if (',' in label or '"' in label) else label
+                lines.append('%s,%s,%s' % (safe_label, ts, state))
             body = '\n'.join(lines) + '\n'
             self._send(200, body, 'text/csv; charset=utf-8',
                        {'Content-Disposition': 'attachment; filename="history.csv"'})

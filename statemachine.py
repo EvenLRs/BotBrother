@@ -34,7 +34,11 @@ RECOVER_BODY = ('QQ 机器人已恢复上线（API 应答 online=true）。\n'
 
 
 class MonitorStateMachine:
-    """feed(state) -> list[(title, body)]：本轮结束后应发送的通知（0 或 1 条）。
+    """feed(state, endpoint) -> list[(title, body)]：本轮结束后应发送的通知（0 或 1 条）。
+
+    多端点：每个端点各自一个状态机实例（在 runtime 层维护映射），
+    本类自身不感知端点身份——报警文案里的端点信息由 feed 的
+    endpoint_label 参数拼进标题。
 
     内部状态（全部私有，调用方只管喂 state）：
       _offline_count / _unreachable_count   两个方向的去抖计数器
@@ -50,13 +54,17 @@ class MonitorStateMachine:
         self._unreachable_alerted = False
         self._ever_alerted = False
 
-    def feed(self, state, detail=''):
+    def feed(self, state, detail='', endpoint_label=''):
         """处理一轮探测结果，返回该轮应发通知列表（[(title, body)]）。
 
         分支顺序就是业务优先级：online 收尾一切；offline/unreachable
         各自走「计数 → 达阈值且未报 → 报警」的相同逻辑。
         detail 非空时附加在报警正文尾部（比如“连接失败: ...”）。
+        endpoint_label：端点标识（URL 或名字），非空时拼进标题——
+        多端点场景下必须知道是哪台出的事；不传则文案与单端点时代一致。
         """
+        # 前缀：有标签就拼（“端点名 】 ”），没标签保持原文案
+        prefix = ('【%s】 ' % endpoint_label) if endpoint_label else ''
         if state == probe.ONLINE:
             # 在线：清两个方向的计数；若之前报过故障，补发恢复通知并复位标记
             self._offline_count = 0
@@ -65,7 +73,7 @@ class MonitorStateMachine:
                 self._ever_alerted = False
                 self._offline_alerted = False
                 self._unreachable_alerted = False
-                return [(RECOVER_TITLE, RECOVER_BODY)]
+                return [(prefix + RECOVER_TITLE, RECOVER_BODY)]
             return []
         if state == probe.OFFLINE:
             # 账号下线：清对向计数（unreachable），自己 +1
@@ -74,7 +82,7 @@ class MonitorStateMachine:
             if self._offline_count >= self.debounce and not self._offline_alerted:
                 self._offline_alerted = True
                 self._ever_alerted = True
-                return [(OFFLINE_ALERT_TITLE,
+                return [(prefix + OFFLINE_ALERT_TITLE,
                          OFFLINE_ALERT_BODY + ('\n详情：%s' % detail if detail else ''))]
             return []
         if state == probe.UNREACHABLE:
@@ -84,7 +92,7 @@ class MonitorStateMachine:
             if self._unreachable_count >= self.debounce and not self._unreachable_alerted:
                 self._unreachable_alerted = True
                 self._ever_alerted = True
-                return [(SERVICE_ALERT_TITLE,
+                return [(prefix + SERVICE_ALERT_TITLE,
                          SERVICE_ALERT_BODY + ('\n详情：%s' % detail if detail else ''))]
             return []
         # 防御：probe 之外的来源喂进来的未知状态，宁可炸出来也不静默吞

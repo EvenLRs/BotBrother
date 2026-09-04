@@ -8,7 +8,7 @@ QQ Bot在线状态监视：轮询 OneBot v11 HTTP API，账号下线或服务意
 
 QQ Bot大多跑在服务器上，账号掉线或程序崩溃没人知道，一挂一整晚。
 
-BotBrother 能区分两种故障并给出不同报警：
+BotBrother 支持同时监视多个 OneBot 服务端（NapCat / LLOneBot / SnowLuma 混布均可），每端点独立探测、独立去抖，报警文案带端点名区分是哪台出的事。能区分两种故障并给出不同报警：
 
 | 故障 | 判定依据 | 报警文案 |
 |---|---|---|
@@ -24,7 +24,7 @@ BotBrother 能区分两种故障并给出不同报警：
 git clone <repo> BotBrother && cd BotBrother
 cp config.example.json config.json
 
-# 1. 改两个地方：probe.base 指向你的 OneBot 服务；channels 填一个推送渠道
+# 1. 改两处：endpoints[].base 指向你的 OneBot 服务（可多个）；channels 填一个推送渠道
 # 2. 验证渠道通不通（会发送真实通知）
 python3 monitor.py --config config.json --test-alert
 
@@ -84,24 +84,33 @@ python3 monitor.py --config config.json --test-alert # 向所有渠道发测试�
 ### 配置文件：
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `interval` | 30 | 轮询间隔（秒），支持设置范围为5–86400 |
-| `probe.base` | `http://127.0.0.1:3000` | OneBot HTTP 端点，见下方「找到你的 base」 |
-| `probe.token` | 空 | OneBot access_token（不设则不鉴权） |
-| `probe.timeout` | 5 | 单次探测超时（秒） |
-| `debounce` | 3 | 连续 N 轮异常才报警（1–10） |
+| `interval` | 30 | 轮询间隔（秒），全部端点共用，支持设置范围为5–86400 |
+| `endpoints` | 见 example | 被监视端点列表，每项一个 OneBot 服务，字段见下 |
 | `channels` | `[{"type":"log"}]` | 推送渠道列表，见下节 |
 | `webui.port` | 8080 | WebUI 端口 |
-| `webui.bind` | `127.0.0.1` | 默认仅允许本机访问，设置为`0.0.0.0`后可允许局域网访问或外网访问（此场景建议设置token） |
+| `webui.bind` | `127.0.0.1` | 默认仅允许本机访问，设置为`0.0.0.0`后可允许局域网访问或外网访问（此场景必须设置token） |
 | `webui.token` | 空 | 管理令牌；设置后 API 需 `Authorization: Bearer <token>` |
 
-### 环境变量：
+**端点字段（`endpoints[]` 每项，可配多个）：**
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `label` | base 地址 | 展示名：报警文案（「【服务器NapCat】QQ 账号已下线」）与页面卡片标题 |
+| `base` | 必填 | OneBot HTTP 端点 |
+| `token` | 空 | 该端点的 access_token（各端点可不同） |
+| `timeout` | 5 | 单次探测超时（秒），1–60 |
+| `debounce` | 3 | 该端点连续 N 轮异常才报警（1–10），每端点独立计数互不影响 |
+
+> 兼容旧写法：单端点时代的 `probe{base,token,timeout}` + 顶层 `debounce` 自动转换为一个端点，旧配置不改也能跑；落盘统一写新结构。同地址同令牌重复配置会被拒绝。
+
+### 环境变量（作用于第一个端点，容器单端点场景友好）：
 | 变量名 | 默认 | 说明 |
 |---|---|---|
-| `QQMON_INTERVAL` | 30 | 轮询间隔（秒），支持设置范围为5–86400 |
-| `QQMON_PROBE_BASE` | `http://127.0.0.1:3000` | OneBot HTTP 端点，见下方「找到你的 base」 |
-| `QQMON_PROBE_TOKEN` | 空 | OneBot access_token（不设则不鉴权） |
-| `QQMON_PROBE_TIMEOUT` | 5 | 单次探测超时（秒） |
-| `QQMON_DEBOUNCE` | 3 | 连续 N 轮异常才报警（1–10） |
+| `QQMON_INTERVAL` | 30 | 轮询间隔（秒），全局生效 |
+| `QQMON_PROBE_BASE` | `http://127.0.0.1:3000` | 第一个端点的 OneBot HTTP 端点 |
+| `QQMON_PROBE_TOKEN` | 空 | 第一个端点的 access_token |
+| `QQMON_PROBE_TIMEOUT` | 5 | 第一个端点的探测超时（秒） |
+| `QQMON_DEBOUNCE` | 3 | 第一个端点的去抖轮数 |
 
 <details>
 <summary>如何找到你的 probe.base（LLOneBot / NapCat / SnowLuma）</summary>

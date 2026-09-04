@@ -11,11 +11,11 @@
     offline      API 可达，但明确应答 online == False（账号掉线，程序还活着）
     unreachable  API 不可达/超时/403/应答不是 OneBot JSON（程序多半挂了）
 
-风格自动识别（模块级记忆 _known_style，识别成功后记住、后续复用，省一次 404 试探）：
+风格自动识别（缓存按 base 地址记忆，多端点各自独立、互不污染）：
     path      NapCat / LLOneBot 风格：POST {base}/get_status，body {}
     envelope  SnowLuma 风格：POST {base}/，body {"action":"get_status","params":{}}
   探测顺序：先 path，遇 404/应答不认识再试 envelope，两都不行判 unreachable。
-"""
+  同一 base 识别成功后记住，后续轮询直接用，省一次 404 试探。"""
 
 import json
 import urllib.error
@@ -27,9 +27,10 @@ ONLINE = 'online'
 OFFLINE = 'offline'
 UNREACHABLE = 'unreachable'
 
-# 模块级风格记忆：None=未识别，'path' 或 'envelope'。
-# 放模块级而不是实例级：一个进程只监视一个端点，记忆跨轮共享即可。
-_known_style = None
+# 风格缓存：base → 'path' / 'envelope'。按端点地址分别记忆——
+# 多端点监视时（比如同机 NapCat + 异机 SnowLuma），两家的调用风格不同，
+# 全局单值会互相污染，第二个端点永远拿错风格多试一次 404。
+_style_cache = {}
 
 
 def _url(base, style):
@@ -124,8 +125,9 @@ def probe(base, token=None, timeout=5):
       4. 应答能解读 → 记住风格、返回状态
     detail 是给日志和报警文案用的人话描述，不含内部术语（如风格名）。
     """
-    global _known_style
-    styles = [_known_style] if _known_style else ['path', 'envelope']
+    global _style_cache
+    cached = _style_cache.get(base)
+    styles = [cached] if cached else ['path', 'envelope']
     last_detail = ''
     for style in styles:
         try:
@@ -134,13 +136,13 @@ def probe(base, token=None, timeout=5):
             last_detail = '连接失败: %s' % e
             # 拒连对两种风格无区别；但 path 拒连时先补验 envelope，
             # 避免把“路径不存在”误判成拒连（SnowLuma 只应答根路径）
-            if style == 'path' and not _known_style:
+            if style == 'path' and cached is None:
                 try:
                     _request(base, token, timeout, 'envelope')
                 except _Unreachable:
                     return UNREACHABLE, last_detail
                 continue
-            if _known_style:
+            if cached:
                 return UNREACHABLE, last_detail
             continue
         if status == 404:
@@ -153,8 +155,8 @@ def probe(base, token=None, timeout=5):
             continue
         state = _interpret(parsed)
         if state is not None:
-            _known_style = style
-            # 风格信息只进内部记忆，不进对外 detail（UI/报警不出现“path 风格”字样）
+            _style_cache[base] = style
+            # 风格信息只进内部缓存，不进对外 detail（UI/报警不出现“path 风格”字样）
             detail = 'API 应答 online=%s' % (
                 'true' if state == ONLINE else 'false')
             return state, detail

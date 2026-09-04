@@ -1,11 +1,21 @@
 {
   "interval": 30,
-  "probe": {
-    "base": "http://127.0.0.1:3000",
-    "token": "",
-    "timeout": 5
-  },
-  "debounce": 3,
+  "endpoints": [
+    {
+      "label": "本机LLOneBot",
+      "base": "http://127.0.0.1:3000",
+      "token": "",
+      "timeout": 5,
+      "debounce": 3
+    },
+    {
+      "label": "服务器NapCat",
+      "base": "http://192.168.1.100:3000",
+      "token": "",
+      "timeout": 5,
+      "debounce": 3
+    }
+  ],
   "channels": [
     { "type": "log" }
   ],

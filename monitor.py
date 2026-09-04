@@ -28,10 +28,7 @@ import statemachine
 # 配置默认值（config.json 缺字段时兜底；环境变量优先级高于文件）
 DEFAULTS = {
     'interval': 30,
-    'base': 'http://127.0.0.1:3000',
-    'token': '',
-    'timeout': 5,
-    'debounce': 3,
+    'endpoints': [],   # 多端点；空则归一化时从旧 probe 写法转出
 }
 
 
@@ -42,33 +39,36 @@ def log(msg):
 
 
 def load_config(path):
-    """读配置文件 → 扁平化运行时字典。
+    """读配置文件 → 运行时字典。
 
-    文件结构是嵌套的（probe.channels.webui 节），运行时全用扁平键
-    （base/token/timeout…）——runtime.py 侧再反向兼容一次，两个形态互认。
-    环境变量覆盖放在最后，容器里改配置不用动挂载文件。
+    端点配置支持两种写法（monitor 侧透传，归一化在 runtime.normalize_endpoints）：
+      新：endpoints: [{label?, base, token?, timeout?, debounce?}, ...]
+      旧：probe: {base, token, timeout} + debounce（自动转单元素列表）
+    环境变量 QQMON_PROBE_BASE/TOKEN/TIMEOUT 指向「第一个端点」，
+    QQMON_INTERVAL/QQMON_DEBOUNCE 全局生效——容器单端点场景兼容不变。
     """
     with open(path, 'r', encoding='utf-8') as f:
         raw = json.load(f)
     cfg = dict(DEFAULTS)
     cfg['interval'] = raw.get('interval', cfg['interval'])
-    cfg['debounce'] = raw.get('debounce', cfg['debounce'])
-    pc = raw.get('probe', {})
-    cfg['base'] = pc.get('base', cfg['base'])
-    cfg['token'] = pc.get('token', cfg['token'])
-    cfg['timeout'] = pc.get('timeout', cfg['timeout'])
-    # 环境变量覆盖（QQMON_ 前缀，容器友好）
+    cfg['endpoints'] = raw.get('endpoints') or []
+    if not cfg['endpoints']:
+        # 旧写法收进 probe 键，交给 normalize_endpoints 转换
+        cfg['probe'] = raw.get('probe') or {}
+        cfg['debounce'] = raw.get('debounce', 3)
+    # 环境变量覆盖（QQMON_ 前缀，容器友好）：改写第一个端点
     env = os.environ
     if 'QQMON_INTERVAL' in env:
         cfg['interval'] = int(env['QQMON_INTERVAL'])
-    if 'QQMON_PROBE_BASE' in env:
-        cfg['base'] = env['QQMON_PROBE_BASE']
-    if 'QQMON_PROBE_TOKEN' in env:
-        cfg['token'] = env['QQMON_PROBE_TOKEN']
-    if 'QQMON_PROBE_TIMEOUT' in env:
-        cfg['timeout'] = int(env['QQMON_PROBE_TIMEOUT'])
-    if 'QQMON_DEBOUNCE' in env:
+    if 'QQMON_DEBOUNCE' in env and not cfg['endpoints']:
         cfg['debounce'] = int(env['QQMON_DEBOUNCE'])
+    if not cfg['endpoints']:
+        p = cfg.get('probe') or {}
+        base = env.get('QQMON_PROBE_BASE') or p.get('base', 'http://127.0.0.1:3000')
+        token = env.get('QQMON_PROBE_TOKEN', p.get('token', ''))
+        timeout = int(env.get('QQMON_PROBE_TIMEOUT', p.get('timeout', 5)))
+        cfg['probe'] = {'base': base, 'token': token, 'timeout': timeout,
+                        'debounce': cfg.get('debounce', 3)}
     cfg['channels'] = raw.get('channels', [{'type': 'log'}])
     cfg['webui'] = raw.get('webui') or {'port': 8080, 'bind': '127.0.0.1', 'token': ''}
     return cfg
@@ -85,13 +85,23 @@ def send_all(chs, title, body):
 
 
 def run_once(cfg, chs, sm):
-    """CLI 单轮流水线：探测 → 状态机 → 发通知。返回探测状态（供 --once 定退出码）。"""
-    state, detail = probe.probe(cfg['base'], cfg['token'] or None,
-                                cfg['timeout'])
-    log('探测结果：%s（%s）' % (state, detail))
-    for title, body in sm.feed(state, detail):
-        send_all(chs, title, body)
-    return state
+    """CLI 单轮流水线：探测 → 状态机 → 发通知。返回探测状态（供 --once 定退出码）。
+
+    CLI 模式端点数多于 1 时会退出码 1（任一异常即报）——
+    详细分流请用 WebUI 模式；CLI 适合单端点健康检查场景。
+    """
+    import runtime as runtime_mod
+    eps = runtime_mod.normalize_endpoints(cfg)
+    worst = probe.ONLINE
+    rank = {probe.ONLINE: 0, probe.OFFLINE: 1, probe.UNREACHABLE: 2}
+    for ep in eps:
+        state, detail = probe.probe(ep['base'], ep['token'] or None, ep['timeout'])
+        log('探测结果（%s）：%s（%s）' % (ep['label'], state, detail))
+        for title, body in sm.feed(state, detail, ep['label']):
+            send_all(chs, title, body)
+        if rank.get(state, 0) > rank.get(worst, 0):
+            worst = state
+    return worst
 
 
 def main(argv=None):
@@ -121,12 +131,15 @@ def main(argv=None):
 
     # 模式一：测试通知（渠道验证），发完即退
     if args.test_alert:
+        import runtime as runtime_mod
+        eps = runtime_mod.normalize_endpoints(cfg)
+        target = '、'.join(e['label'] for e in eps) or '（未配置端点）'
         send_all(chs, 'QQ 监视测试通知',
-                 '如果你收到这条，说明 %s 的消息渠道配置是通的。' % cfg['base'])
+                 '如果你收到这条，说明监视 %s 的消息渠道配置是通的。' % target)
         return 0
 
-    sm = statemachine.MonitorStateMachine(debounce=cfg['debounce'])
-    # 模式二：单轮探测，退出码即健康状态（0=在线 1=异常）
+    sm = statemachine.MonitorStateMachine(debounce=3)
+    # 模式二：单轮探测，退出码即健康状态（0=全部在线 1=任一异常）
     if args.once:
         state = run_once(cfg, chs, sm)
         return 0 if state == probe.ONLINE else 1
@@ -136,8 +149,10 @@ def main(argv=None):
         return run_webui(cfg, args.config)
 
     # 模式四：纯 CLI 常驻轮询（最简形态，无共享状态需求）
-    log('启动：监视 %s，间隔 %ds，去抖 %d 次，渠道 %d 个'
-        % (cfg['base'], cfg['interval'], cfg['debounce'], len(chs)))
+    import runtime as runtime_mod
+    eps = runtime_mod.normalize_endpoints(cfg)
+    log('启动：监视 %d 个端点（%s），间隔 %ds，渠道 %d 个'
+        % (len(eps), '、'.join(e['label'] for e in eps), cfg['interval'], len(chs)))
     while True:
         run_once(cfg, chs, sm)
         time.sleep(cfg['interval'])
@@ -158,8 +173,8 @@ def run_webui(cfg, config_path):
     rt = runtime_mod.MonitorRuntime(cfg, log_fn=log, config_path=config_path)
     poll = threading.Thread(target=rt.poll_loop, daemon=True)
     poll.start()
-    log('启动（WebUI 模式）：监视 %s，间隔 %ds，去抖 %d 次，渠道 %d 个'
-        % (cfg['base'], cfg['interval'], cfg['debounce'], len(rt.channels)))
+    log('启动（WebUI 模式）：监视 %d 个端点，间隔 %ds，渠道 %d 个'
+        % (len(rt.endpoints), cfg['interval'], len(rt.channels)))
     srv = webui.start_webui(rt)
     try:
         while True:

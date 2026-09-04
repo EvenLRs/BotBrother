@@ -70,14 +70,8 @@
         <button class="btn-sm" onclick="testAlert()" id="btn-test">发测试通知</button>
       </div>
     </div>
-    <div class="grid">
-      <div class="kv"><div class="k">当前状态</div><div class="v" id="st-state">—</div></div>
-      <div class="kv"><div class="k">持续时长</div><div class="v" id="st-since">—</div></div>
-      <div class="kv"><div class="k">探测详情</div><div class="v" style="font-size:12px" id="st-detail">—</div></div>
-      <div class="kv"><div class="k">累计探测</div><div class="v" id="st-count">—</div></div>
-    </div>
-    <div class="hist-bar" id="hist"></div>
-    <div class="note" id="hist-note">最近探测历史（绿=在线 橙=账号下线 红=服务不可达）</div>
+    <div id="ep-list"></div>
+    <div class="note">每端点一行：绿=在线 橙=账号下线 红=服务不可达；色条为最近 120 轮</div>
   </div>
 
   <div class="card">
@@ -99,27 +93,16 @@
     </div>
 
     <div id="cfg-form" style="display:none">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="display:grid;grid-template-columns:1fr;gap:12px">
         <div>
-          <label>轮询间隔（秒）</label>
+          <label>轮询间隔（秒，全部端点共用）</label>
           <input id="c-interval" type="number" min="5" max="86400">
         </div>
-        <div>
-          <label>去抖轮数（连续 N 轮异常才报）</label>
-          <input id="c-debounce" type="number" min="1" max="10">
-        </div>
       </div>
-      <label>OneBot 地址（base）</label>
-      <input id="c-base" placeholder="http://127.0.0.1:3000">
-      <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">
-        <div>
-          <label>访问令牌（access_token，可空）</label>
-          <input id="c-token" placeholder="留空=不鉴权">
-        </div>
-        <div>
-          <label>超时（秒）</label>
-          <input id="c-timeout" type="number" min="1" max="60">
-        </div>
+      <label>监视端点（OneBot HTTP 服务，可多个）</label>
+      <div id="eps"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="ghost btn-sm" onclick="addEndpoint()">添加端点</button>
       </div>
 
       <label>通知渠道</label>
@@ -214,29 +197,58 @@ async function api(path, opts){
 }
 
 /* 拉取 /api/state 并把整页数据渲染一遍：
- * 顶部徽章、状态四格、历史色条（最近120轮）、通知记录表。 */
+ * 顶部聚合徽章（最差端点）、每端点状态卡（徽章+详情+色条）、通知记录表。 */
 async function refresh(now){
   let s;
   try{ s = await api('/api/state' + (now?'?now=1':'')); }
   catch(e){ showMsg('刷新失败：'+e.message, false); return; }
   $('badge').className = 'badge ' + (s.state||'none');
   $('badge-text').textContent = STATE_TXT[s.state] || '未知';
-  $('st-state').textContent = STATE_TXT[s.state] || '—';
-  $('st-since').textContent = s.state_since ? fmtDur(Date.now()/1000 - s.state_since) : '—';
-  $('st-detail').textContent = s.state_detail || '—';
-  $('st-count').textContent = s.probe_count;
-  $('sub').textContent = s.base + ' · 间隔 ' + s.interval + 's · 去抖 ' + s.debounce
+  $('sub').textContent = '端点 ' + (s.endpoints? s.endpoints.length : 0) + ' 个 · 间隔 ' + s.interval + 's'
     + ' · 渠道 ' + (s.channels_active.join(', ') || '无');
 
-  const hist = $('hist');
-  hist.innerHTML = '';
-  const h = s.history.slice(-120);
-  for(const [ts, st] of h){
-    const i = document.createElement('i');
-    i.className = st; i.title = fmtTs(ts)+' '+STATE_TXT[st];
-    hist.appendChild(i);
+  const box = $('ep-list');
+  box.innerHTML = '';
+  for(const ep of (s.endpoints||[])){
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.style.marginBottom = '10px';
+    const head = document.createElement('div');
+    head.className = 'row';
+    head.style.justifyContent = 'space-between';
+    const left = document.createElement('div');
+    const b = document.createElement('b');
+    b.textContent = ep.label;
+    b.style.fontSize = '13px';
+    const badge = document.createElement('span');
+    badge.className = 'badge ' + (ep.state||'none');
+    badge.innerHTML = '<span class="dot"></span>' + (STATE_TXT[ep.state]||'未知');
+    badge.style.fontSize = '12px';
+    badge.style.padding = '2px 10px';
+    left.appendChild(b); left.appendChild(badge);
+    left.style.display = 'flex'; left.style.gap = '10px'; left.style.alignItems = 'center';
+    const meta = document.createElement('span');
+    meta.className = 'note';
+    meta.textContent = (ep.state_since? '持续 '+fmtDur(Date.now()/1000-ep.state_since) : '—')
+      + ' · 已探测 ' + (ep.probe_count||0) + ' 次';
+    head.appendChild(left); head.appendChild(meta);
+    card.appendChild(head);
+    const detail = document.createElement('div');
+    detail.className = 'note';
+    detail.textContent = ep.state_detail || '';
+    card.appendChild(detail);
+    const bar = document.createElement('div');
+    bar.className = 'hist-bar';
+    const h = (ep.history||[]).slice(-120);
+    for(const [ts, st] of h){
+      const i = document.createElement('i');
+      i.className = st; i.title = fmtTs(ts)+' '+STATE_TXT[st];
+      bar.appendChild(i);
+    }
+    if(!h.length) bar.innerHTML = '<i class="none"></i>';
+    card.appendChild(bar);
+    box.appendChild(card);
   }
-  if(!h.length) hist.innerHTML = '<i class="none"></i>';
 
   const tb = $('notif');
   while(tb.rows.length>1) tb.deleteRow(1);
@@ -259,6 +271,49 @@ async function testAlert(){
     refresh();
   }catch(e){ showMsg('发送失败：'+e.message, false); }
   $('btn-test').disabled = false;
+}
+
+/* 端点编辑卡片：名称/base/token/超时/去抖 五字段一卡。 */
+function epEditor(item){
+  const div = document.createElement('div');
+  div.className = 'ch-item';
+  const head = document.createElement('div');
+  head.className='ch-head';
+  head.innerHTML = '<b>端点</b>';
+  const del = document.createElement('button');
+  del.className='ghost btn-sm'; del.textContent='删除';
+  del.onclick = ()=> div.remove();
+  head.appendChild(del);
+  div.appendChild(head);
+  const fields = [['label','名称（报警里显示用，可空=地址）'],
+                  ['base','OneBot 地址'],
+                  ['token','访问令牌（可空）']];
+  for(const [f,label] of fields){
+    const lb = document.createElement('label'); lb.textContent = label;
+    div.appendChild(lb);
+    const inp = document.createElement('input');
+    inp.dataset.epfield = f; inp.value = item[f]||'';
+    if(f==='base') inp.placeholder = 'http://127.0.0.1:3000';
+    if(f==='token') inp.placeholder = '留空沿用已保存值（****）';
+    div.appendChild(inp);
+  }
+  const nums = document.createElement('div');
+  nums.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:10px';
+  for(const [f,label,min,max] of [['timeout','超时（秒）',1,60],['debounce','去抖轮数',1,10]]){
+    const wrap = document.createElement('div');
+    const lb = document.createElement('label'); lb.textContent = label;
+    wrap.appendChild(lb);
+    const inp = document.createElement('input');
+    inp.type='number'; inp.min=min; inp.max=max;
+    inp.dataset.epfield = f; inp.value = item[f]!=null? item[f] : (f==='timeout'?5:3);
+    wrap.appendChild(inp);
+    nums.appendChild(wrap);
+  }
+  div.appendChild(nums);
+  return div;
+}
+function addEndpoint(){
+  $('eps').appendChild(epEditor({}));
 }
 
 /* 各渠道的编辑字段表：[字段名, 显示名]，log 渠道无字段。 */
@@ -311,13 +366,12 @@ async function loadConfig(){
   catch(e){ showMsg('读取配置失败：'+e.message, false); return; }
   $('cfg-form').style.display='block';
   $('c-interval').value = c.interval;
-  $('c-debounce').value = c.debounce;
-  $('c-base').value = c.probe.base;
-  $('c-token').value = c.probe.token;
-  $('c-timeout').value = c.probe.timeout;
   $('w-port').value = c.webui.port;
   $('w-bind').value = c.webui.bind;
   $('w-token').value = c.webui.token;
+  const ebox = $('eps'); ebox.innerHTML='';
+  for(const item of (c.endpoints||[])) ebox.appendChild(epEditor(item));
+  if(!(c.endpoints||[]).length) ebox.appendChild(epEditor({}));
   const box = $('channels'); box.innerHTML='';
   for(const item of c.channels) box.appendChild(chEditor(item));
 }
@@ -333,10 +387,19 @@ async function saveConfig(){
     });
     channels.push(item);
   });
+  const endpoints = [];
+  document.querySelectorAll('#eps .ch-item').forEach(div=>{
+    const item = {};
+    div.querySelectorAll('[data-epfield]').forEach(inp=>{
+      const f = inp.dataset.epfield;
+      item[f] = (f==='timeout'||f==='debounce') ? +inp.value : inp.value.trim();
+    });
+    if(item.base) endpoints.push(item);
+  });
+  if(!endpoints.length){ showMsg('至少需要一个端点（base 不能为空）', false); return; }
   const body = {
-    interval: +$('c-interval').value, debounce: +$('c-debounce').value,
-    probe: {base: $('c-base').value.trim(), token: $('c-token').value.trim(),
-            timeout: +$('c-timeout').value},
+    interval: +$('c-interval').value,
+    endpoints,
     channels,
     webui: {port:+$('w-port').value, bind:$('w-bind').value.trim(), token:$('w-token').value.trim()}
   };
