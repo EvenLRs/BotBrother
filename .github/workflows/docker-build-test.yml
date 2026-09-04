@@ -39,18 +39,17 @@ jobs:
             echo "[SKIP] tests/ not in repo (local-only); container-level tests below cover the runtime"
           fi
 
-      # ---------- 构建镜像（双架构：amd64 服务器 + arm64 树莓派/Apple Silicon） ----------
-      - name: Set up QEMU (multi-arch)
-        uses: docker/setup-qemu-action@v3
-
+      # ---------- 构建测试镜像（单架构 + load 进本地 docker 供容器测试用） ----------
+      # 注意：buildx 的 docker exporter 不支持多架构 manifest list，
+      # 所以测试阶段只构 amd64；双架构构建放在最后的推送步（push 直出 registry）。
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image (linux/amd64 + linux/arm64)
+      - name: Build test image (amd64, load)
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           load: true
           tags: botbrother:ci-test
           cache-from: type=gha
@@ -141,6 +140,10 @@ jobs:
           echo "[PASS] --once exits 1 when unreachable"
 
       # ---------- 推送 GHCR（仅 main 分支；PR 只构建不推送） ----------
+      - name: Set up QEMU (multi-arch for push)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/setup-qemu-action@v3
+
       - name: Log in to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
