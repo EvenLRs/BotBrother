@@ -315,6 +315,7 @@ class MonitorRuntime:
                 base, token, timeout = ep.base, ep._token, getattr(ep, 'timeout', 5)
                 label = ep.label
             state, detail = probe.probe(base, token or None, timeout)
+            self.log('探测结果（%s）：%s（%s）' % (label, state, detail))
             now = time.time()
             with self.lock:
                 if state != ep.state:
