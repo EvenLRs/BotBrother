@@ -21,6 +21,8 @@ __pycache__/
 htmlcov/
 .venv/
 venv/
+/test/
+/test
 
 # ── 编辑器 / 系统 ──
 .DS_Store
