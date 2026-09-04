@@ -1,0 +1,29 @@
+# ── 敏感配置（含密钥，绝不入库）──
+config.json
+config.json.bak
+config.json.tmp
+webui.json
+
+# ── 运行产物 / 日志 ──
+*.log
+*.log.old
+*.log.*
+
+# ── 开发过程文档（会话工作产物，非项目交付物）──
+BLOCKED.md
+PROGRESS.md
+
+# ── Python ──
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# ── 编辑器 / 系统 ──
+.DS_Store
+.idea/
+.vscode/
+*.swp

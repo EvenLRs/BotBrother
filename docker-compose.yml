@@ -1,0 +1,18 @@
+services:
+  botbrother:
+    build: .
+    image: botbrother:latest
+    container_name: botbrother
+    restart: unless-stopped
+    volumes:
+      # 把 config.json 放在本目录（勿提交真实配置，含密钥）
+      - ./config.json:/app/config.json:ro
+    # 也可不用挂载，用环境变量覆盖（QQMON_PROBE_BASE 等）
+    environment:
+      - QQMON_INTERVAL=30
+      - QQMON_DEBOUNCE=3
+      # - QQMON_PROBE_BASE=http://host.docker.internal:3000
+      # - QQMON_PROBE_TOKEN=
+    # NapCat 若也在容器里，须同网络且 base 用服务名/网关地址
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

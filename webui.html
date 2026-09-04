@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BotBrother</title>
+<style>
+  :root{
+    --bg:#0f1115;--card:#181b22;--line:#262a34;--text:#e6e9ef;--dim:#8b93a3;
+    --ok:#2ecc71;--warn:#e67e22;--bad:#e74c3c;--accent:#4f8ef7;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    background:var(--bg);color:var(--text)}
+  .wrap{max-width:860px;margin:0 auto;padding:24px 16px 64px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px}
+  h1{font-size:18px;margin:0}
+  .sub{color:var(--dim);font-size:12px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+  .badge{display:inline-flex;align-items:center;gap:8px;font-weight:600;border-radius:999px;padding:4px 14px}
+  .badge .dot{width:10px;height:10px;border-radius:50%;background:currentColor}
+  .badge.online{color:var(--ok)} .badge.offline{color:var(--warn)} .badge.unreachable{color:var(--bad)}
+  .badge.none{color:var(--dim)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:14px}
+  .kv .k{color:var(--dim);font-size:12px} .kv .v{font-size:16px;font-weight:600;margin-top:2px}
+  button{background:var(--accent);border:0;color:#fff;border-radius:8px;padding:8px 16px;
+    font-size:14px;cursor:pointer}
+  button.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
+  button:disabled{opacity:.5;cursor:default}
+  button.danger{background:transparent;border:1px solid var(--bad);color:var(--bad)}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  input,select{background:#0c0e12;border:1px solid var(--line);color:var(--text);
+    border-radius:8px;padding:8px 10px;font-size:14px;width:100%}
+  label{display:block;margin:12px 0 4px;font-size:13px;color:var(--dim)}
+  .btn-sm{padding:4px 10px;font-size:12px;border-radius:6px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  td,th{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left}
+  th{color:var(--dim);font-weight:500}
+  .msg{border-radius:8px;padding:10px 12px;margin:10px 0;font-size:13px;display:none}
+  .msg.ok{background:rgba(46,204,113,.12);color:var(--ok);display:block}
+  .msg.err{background:rgba(231,76,60,.12);color:var(--bad);display:block}
+  .ch-item{border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:10px}
+  .ch-head{display:flex;justify-content:space-between;align-items:center}
+  .ch-head b{font-size:13px}
+  .hist-bar{display:flex;gap:2px;height:28px;border-radius:6px;overflow:hidden;margin-top:12px}
+  .hist-bar i{flex:1;border-radius:1px;opacity:.9}
+  .hist-bar i.online{background:var(--ok)} .hist-bar i.offline{background:var(--warn)}
+  .hist-bar i.unreachable{background:var(--bad)} .hist-bar i.none{background:#22262f}
+  footer{color:var(--dim);font-size:12px;text-align:center;margin-top:24px}
+  .note{font-size:12px;color:var(--dim)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>BotBrother</h1>
+      <div class="sub" id="sub">加载中……</div>
+    </div>
+    <span class="badge none" id="badge"><span class="dot"></span><span id="badge-text">未知</span></span>
+  </header>
+
+  <div class="msg" id="msg"></div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <b>实时状态</b>
+      <div class="row">
+        <button class="ghost btn-sm" onclick="refresh(true)">立即探测</button>
+        <button class="btn-sm" onclick="testAlert()" id="btn-test">发测试通知</button>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="kv"><div class="k">当前状态</div><div class="v" id="st-state">—</div></div>
+      <div class="kv"><div class="k">持续时长</div><div class="v" id="st-since">—</div></div>
+      <div class="kv"><div class="k">探测详情</div><div class="v" style="font-size:12px" id="st-detail">—</div></div>
+      <div class="kv"><div class="k">累计探测</div><div class="v" id="st-count">—</div></div>
+    </div>
+    <div class="hist-bar" id="hist"></div>
+    <div class="note" id="hist-note">最近探测历史（绿=在线 橙=账号下线 红=服务不可达）</div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <b>通知记录</b>
+      <button class="ghost btn-sm" onclick="location.href='/api/history.csv'">导出 CSV</button>
+    </div>
+    <table id="notif"><tr><th>时间</th><th>通知</th><th>渠道结果</th></tr></table>
+    <div class="note">最多显示最近 20 条</div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <b>设置</b>
+      <div class="row">
+        <button class="ghost btn-sm" onclick="loadConfig()">重新加载</button>
+        <button class="btn-sm" onclick="saveConfig()" id="btn-save">保存并生效</button>
+      </div>
+    </div>
+
+    <div id="cfg-form" style="display:none">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>
+          <label>轮询间隔（秒）</label>
+          <input id="c-interval" type="number" min="5" max="86400">
+        </div>
+        <div>
+          <label>去抖轮数（连续 N 轮异常才报）</label>
+          <input id="c-debounce" type="number" min="1" max="10">
+        </div>
+      </div>
+      <label>OneBot 地址（base）</label>
+      <input id="c-base" placeholder="http://127.0.0.1:3000">
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">
+        <div>
+          <label>访问令牌（access_token，可空）</label>
+          <input id="c-token" placeholder="留空=不鉴权">
+        </div>
+        <div>
+          <label>超时（秒）</label>
+          <input id="c-timeout" type="number" min="1" max="60">
+        </div>
+      </div>
+
+      <label>通知渠道</label>
+      <div id="channels"></div>
+      <div class="row" style="margin-top:10px">
+        <select id="ch-add-type">
+          <option value="bark">Bark</option>
+          <option value="wecom">企业微信</option>
+          <option value="dingtalk">钉钉</option>
+          <option value="feishu">飞书</option>
+          <option value="ntfy">ntfy</option>
+          <option value="telegram">Telegram</option>
+          <option value="serverchan">Server酱</option>
+          <option value="log">log（仅日志）</option>
+        </select>
+        <button class="ghost btn-sm" onclick="addChannel()">添加渠道</button>
+      </div>
+
+      <label>WebUI</label>
+      <div style="display:grid;grid-template-columns:1fr 2fr 2fr;gap:12px">
+        <div><label>端口</label><input id="w-port" type="number" min="1" max="65535"></div>
+        <div><label>监听地址</label><input id="w-bind"></div>
+        <div><label>管理令牌（保护 API，可空）</label><input id="w-token"></div>
+      </div>
+      <div class="note">端口/监听地址修改需重启程序；其他修改保存后立即生效。密钥显示为 **** 时表示沿用原值，改动则覆盖。</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <b>危险操作</b>
+      <button class="danger btn-sm" onclick="shutdown()">关停程序</button>
+    </div>
+    <div class="note">向系统管理工具发出退出请求（设置过管理令牌才可用）。</div>
+  </div>
+
+  <footer></footer>
+</div>
+
+<script>
+/* ================= 前端脚本结构 =================
+ * 整体分四块：
+ *   1) 工具函数：fmtDur/fmtTs 时间格式化、showMsg 顶部消息条、api() 统一请求
+ *   2) 数据渲染：refresh() 拉实时状态并刷页面；testAlert() 发测试通知
+ *   3) 配置编辑：chEditor() 渲染单渠道卡片；loadConfig/saveConfig 读写后端配置
+ *   4) 生命周期：页尾 refresh()+loadConfig() 首屏加载，setInterval 5s 自动刷新
+ * 与后端交互全部走 /api/*，鉴权 token 存 localStorage（key: qqmon_token）。
+ */
+const $ = id => document.getElementById(id);
+let timer = null;
+
+/* 秒数 → 人话时长（时/分/秒），null 显示 — */
+function fmtDur(sec){
+  if(sec==null) return '—';
+  sec = Math.max(0, Math.floor(sec));
+  const h=Math.floor(sec/3600), m=Math.floor(sec%3600/60), s=sec%60;
+  if(h) return h+'时'+m+'分';
+  if(m) return m+'分'+s+'秒';
+  return s+'秒';
+}
+/* Unix 秒 → 本地时间串 */
+function fmtTs(ts){
+  if(!ts) return '—';
+  const d = new Date(ts*1000);
+  return d.toLocaleString('zh-CN', {hour12:false});
+}
+const STATE_TXT = {online:'QQ 在线', offline:'账号已下线', unreachable:'服务不可达', none:'未知'};
+
+function showMsg(text, ok){
+  const el = $('msg');
+  el.textContent = text;
+  el.className = 'msg ' + (ok?'ok':'err');
+  clearTimeout(el._t);
+  el._t = setTimeout(()=>{el.className='msg';}, 5000);
+}
+
+/* 统一 API 请求：自动带 Bearer token；遇 401 弹窗要 token 重试一次；
+ * 非 2xx 抛异常（带后端 error 字段）。 */
+async function api(path, opts){
+  const headers = {'Content-Type':'application/json'};
+  const saved = localStorage.getItem('qqmon_token');
+  if(saved) headers['Authorization'] = 'Bearer ' + saved;
+  const r = await fetch(path, {...opts, headers});
+  if(r.status===401){
+    const t = prompt('该 WebUI 已设置管理令牌，请输入：');
+    if(t!==null){ localStorage.setItem('qqmon_token', t); return api(path, opts); }
+    throw new Error('未授权');
+  }
+  const data = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data.error || ('HTTP '+r.status));
+  return data;
+}
+
+/* 拉取 /api/state 并把整页数据渲染一遍：
+ * 顶部徽章、状态四格、历史色条（最近120轮）、通知记录表。 */
+async function refresh(now){
+  let s;
+  try{ s = await api('/api/state' + (now?'?now=1':'')); }
+  catch(e){ showMsg('刷新失败：'+e.message, false); return; }
+  $('badge').className = 'badge ' + (s.state||'none');
+  $('badge-text').textContent = STATE_TXT[s.state] || '未知';
+  $('st-state').textContent = STATE_TXT[s.state] || '—';
+  $('st-since').textContent = s.state_since ? fmtDur(Date.now()/1000 - s.state_since) : '—';
+  $('st-detail').textContent = s.state_detail || '—';
+  $('st-count').textContent = s.probe_count;
+  $('sub').textContent = s.base + ' · 间隔 ' + s.interval + 's · 去抖 ' + s.debounce
+    + ' · 渠道 ' + (s.channels_active.join(', ') || '无');
+
+  const hist = $('hist');
+  hist.innerHTML = '';
+  const h = s.history.slice(-120);
+  for(const [ts, st] of h){
+    const i = document.createElement('i');
+    i.className = st; i.title = fmtTs(ts)+' '+STATE_TXT[st];
+    hist.appendChild(i);
+  }
+  if(!h.length) hist.innerHTML = '<i class="none"></i>';
+
+  const tb = $('notif');
+  while(tb.rows.length>1) tb.deleteRow(1);
+  for(const n of (s.notifications||[])){
+    const tr = tb.insertRow();
+    tr.insertCell().textContent = fmtTs(n.ts);
+    tr.insertCell().textContent = n.title;
+    const res = (n.results||[]).map(r=>r.channel+(r.ok?'✓':'✗')).join(' ') || '—';
+    tr.insertCell().textContent = res;
+  }
+}
+
+/* 发测试通知：POST /api/test-alert，把逐渠道成败拼进提示条。 */
+async function testAlert(){
+  $('btn-test').disabled = true;
+  try{
+    const r = await api('/api/test-alert', {method:'POST'});
+    const lines = (r.results||[]).map(x=>x.channel+(x.ok?' ✓':' ✗'+(x.error?'('+x.error.slice(0,60)+')':''))).join('，');
+    showMsg('测试通知已发：'+(lines||'无渠道'), true);
+    refresh();
+  }catch(e){ showMsg('发送失败：'+e.message, false); }
+  $('btn-test').disabled = false;
+}
+
+/* 各渠道的编辑字段表：[字段名, 显示名]，log 渠道无字段。 */
+const CH_FIELDS = {
+  bark:[['key','Bark Key']], wecom:[['key','Webhook Key']],
+  dingtalk:[['access_token','Access Token']], feishu:[['hook_id','Hook ID']],
+  ntfy:[['topic','Topic（可加 server）'],['server','自建服务器（可选）']],
+  telegram:[['bot_token','Bot Token'],['chat_id','Chat ID']],
+  serverchan:[['send_key','SendKey']], log:[]
+};
+
+/* 渲染一个渠道的编辑卡片：头部类型名+删除按钮，下方按 CH_FIELDS 生成输入框。
+ * 已保存密钥会以 ****掩码 回显，placeholder 提示留空即沿用。 */
+function chEditor(item){
+  const div = document.createElement('div');
+  div.className = 'ch-item';
+  const type = item.type;
+  const head = document.createElement('div');
+  head.className='ch-head';
+  head.innerHTML = '<b>'+type+'</b>';
+  const del = document.createElement('button');
+  del.className='ghost btn-sm'; del.textContent='删除';
+  del.onclick = ()=> div.remove();
+  head.appendChild(del);
+  div.appendChild(head);
+  for(const [f, label] of (CH_FIELDS[type]||[])){
+    const lb = document.createElement('label'); lb.textContent = label;
+    div.appendChild(lb);
+    const inp = document.createElement('input');
+    inp.dataset.chfield = f; inp.value = item[f]||''; inp.placeholder='留空沿用已保存值（****）';
+    div.appendChild(inp);
+  }
+  if(type==='log'){
+    const n=document.createElement('div'); n.className='note'; n.textContent='仅写日志，不实际发送';
+    div.appendChild(n);
+  }
+  div._type = type;
+  return div;
+}
+
+/* 下拉选类型 → 新增一个空渠道编辑卡片。 */
+function addChannel(){
+  $('channels').appendChild(chEditor({type: $('ch-add-type').value}));
+}
+
+/* 读取 /api/config（密钥已打码），填满整个设置表单。 */
+async function loadConfig(){
+  let c;
+  try{ c = await api('/api/config'); }
+  catch(e){ showMsg('读取配置失败：'+e.message, false); return; }
+  $('cfg-form').style.display='block';
+  $('c-interval').value = c.interval;
+  $('c-debounce').value = c.debounce;
+  $('c-base').value = c.probe.base;
+  $('c-token').value = c.probe.token;
+  $('c-timeout').value = c.probe.timeout;
+  $('w-port').value = c.webui.port;
+  $('w-bind').value = c.webui.bind;
+  $('w-token').value = c.webui.token;
+  const box = $('channels'); box.innerHTML='';
+  for(const item of c.channels) box.appendChild(chEditor(item));
+}
+
+/* 收集表单 → POST /api/config。后端会校验、解掩码（****回显=不改）、落盘并热更新；
+ * restart_required=true 时提示用户端口/监听地址改动需重启进程。 */
+async function saveConfig(){
+  const channels = [];
+  document.querySelectorAll('#channels .ch-item').forEach(div=>{
+    const item = {type: div._type};
+    div.querySelectorAll('[data-chfield]').forEach(inp=>{
+      item[inp.dataset.chfield] = inp.value.trim();
+    });
+    channels.push(item);
+  });
+  const body = {
+    interval: +$('c-interval').value, debounce: +$('c-debounce').value,
+    probe: {base: $('c-base').value.trim(), token: $('c-token').value.trim(),
+            timeout: +$('c-timeout').value},
+    channels,
+    webui: {port:+$('w-port').value, bind:$('w-bind').value.trim(), token:$('w-token').value.trim()}
+  };
+  try{
+    const r = await api('/api/config', {method:'POST', body: JSON.stringify(body)});
+    showMsg(r.restart_required ? '已保存。端口/监听地址有变化，重启程序后生效。' : '已保存并即时生效。', true);
+    refresh(); loadConfig();
+  }catch(e){ showMsg('保存失败：'+e.message, false); }
+}
+
+/* 远程关停：POST /api/shutdown（后端要求已设管理令牌，否则 403）。 */
+async function shutdown(){
+  if(!confirm('确定要关停整个监视程序？')) return;
+  try{ await api('/api/shutdown', {method:'POST'}); showMsg('已发出关停请求。', true); }
+  catch(e){ showMsg('关停失败：'+e.message, false); }
+}
+
+refresh(); loadConfig();
+timer = setInterval(refresh, 5000);
+</script>
+</body>
+</html>

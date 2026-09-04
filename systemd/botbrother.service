@@ -1,0 +1,18 @@
+[Unit]
+Description=BotBrother - QQ bot online monitor (OneBot v11)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 按实际部署路径与用户修改
+User=botbrother
+WorkingDirectory=/opt/botbrother
+ExecStart=/usr/bin/python3 /opt/botbrother/monitor.py --config /opt/botbrother/config.json
+Restart=always
+RestartSec=10
+# 输出进 journald；stdout 即日志
+StandardOutput=journal
+
+[Install]
+WantedBy=multi-user.target
