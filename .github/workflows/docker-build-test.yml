@@ -102,19 +102,33 @@ jobs:
           # 4) 起 BotBrother 容器（WebUI 模式）
           docker run -d --name bb-test -p 18080:8080 \
             -v "$PWD/test-config.json":/app/config.json:ro botbrother:ci-test
-          sleep 8   # 等 WebUI 启动 + 首轮探测
 
-          # 5) 幕一：页面 + API 应在线
-          curl -sf http://127.0.0.1:18080/ > /dev/null && echo "[PASS] webui page 200"
+          # 4.1) 就绪轮询：最多 30 次×2s 等 WebUI 端口可连（runner 冷启慢，死等 sleep 不可靠）
+          READY=0
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null http://127.0.0.1:18080/; then READY=1; break; fi
+            sleep 2
+          done
+          if [ "$READY" != "1" ]; then
+            echo "[FAIL] WebUI 未在 60s 内就绪，容器日志："
+            docker logs bb-test 2>&1 | tail -30
+            exit 1
+          fi
+          echo "[PASS] webui page 200"
+          # 首轮探测（interval 5s）也给足时间
+          sleep 6
+
+          # 5) API 应在线
           CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18080/api/state)
           [ "$CODE" = "401" ] && echo "[PASS] api rejects without token (401)" || { echo "[FAIL] expected 401, got $CODE"; exit 1; }
           STATE=$(curl -sf -H "Authorization: Bearer ci-secret" http://127.0.0.1:18080/api/state | python3 -c "import sys,json;print(json.load(sys.stdin)['state'])")
-          [ "$STATE" = "online" ] && echo "[PASS] state=online" || { echo "[FAIL] state=$STATE"; exit 1; }
+          [ "$STATE" = "online" ] && echo "[PASS] state=online" || { echo "[FAIL] state=$STATE"; docker logs bb-test 2>&1 | tail -10; exit 1; }
 
           # 6) 幕二：--once 健康检查（容器内直连假 OneBot 的 host 网络）
+          RC=0
           docker run --rm --network host -v "$PWD/test-config.json":/app/config.json:ro \
-            botbrother:ci-test python3 monitor.py --config /app/config.json --once
-          echo "[PASS] --once exits 0 when online"
+            botbrother:ci-test python3 monitor.py --config /app/config.json --once || RC=$?
+          [ "$RC" = "0" ] && echo "[PASS] --once exits 0 when online" || { echo "[FAIL] --once rc=$RC"; exit 1; }
 
           # 7) 收尾：关假 OneBot → 服务不可达 → 容器日志应出现探测记录
           docker logs bb-test 2>&1 | grep -q "探测" && echo "[PASS] container logs probing"
