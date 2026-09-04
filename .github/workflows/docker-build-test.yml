@@ -99,9 +99,10 @@ jobs:
           python3 fake_onebot.py 3999 online &
           FAKE_PID=$!
 
-          # 4) 起 BotBrother 容器（WebUI 模式）
+          # 4) 起 BotBrother 容器（WebUI 模式；镜像默认 CMD 无 --webui，测试显式带参）
           docker run -d --name bb-test -p 18080:8080 \
-            -v "$PWD/test-config.json":/app/config.json:ro botbrother:ci-test
+            -v "$PWD/test-config.json":/app/config.json:ro \
+            botbrother:ci-test python3 monitor.py --config /app/config.json --webui
 
           # 4.1) 就绪轮询：最多 30 次×2s 等 WebUI 端口可连（runner 冷启慢，死等 sleep 不可靠）
           READY=0
