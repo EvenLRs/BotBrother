@@ -16,25 +16,16 @@
 
 import probe
 
-# ---- 三种通知文案（标题, 正文）。标题给推送渠道的短摘要用，正文带详情 ----
+# ---- 三种通知文案（单条完整文案，含 [BotBrother] 前缀与 self_id 占位）----
+# 产品拍板：告警只发这一句话；self_id 为机器人 QQ 号，探测失败拿不到时留空。
 
-OFFLINE_ALERT_TITLE = 'QQ 机器人告警：QQ 账号已下线'
-OFFLINE_ALERT_BODY = ('QQ 账号已下线（API 应答 online=false）。\n'
-                      'NapCat/LLOneBot/SnowLuma 程序还在运行，但 QQ 登录态已掉线，'
-                      '消息收发已中断，请尽快处理。')
-
-SERVICE_ALERT_TITLE = 'QQ 机器人告警：OneBot 服务疑似意外退出'
-SERVICE_ALERT_BODY = ('NapCat/LLOneBot/SnowLuma 服务疑似意外退出（API 不可达）。\n'
-                      '此类程序较少手动退出，如退出多为意外退出（崩溃/被杀/服务器断电），'
-                      '请尽快登录服务器查看。')
-
-RECOVER_TITLE = 'QQ 机器人已恢复上线'
-RECOVER_BODY = ('QQ 机器人已恢复上线（API 应答 online=true）。\n'
-                '此前故障已自动解除，无需处理。')
+OFFLINE_ALERT = '[BotBrother] 警告：{self_id}账号离线。如本次离线为您主动触发，请忽略本信息。'
+SERVICE_ALERT = '[BotBrother] 警告：{self_id}所在客户端连接失败，请检查客户端是否离线。'
+RECOVERY_NOTICE = '[BotBrother] {self_id}已恢复在线。'
 
 
 class MonitorStateMachine:
-    """feed(state, endpoint) -> list[(title, body)]：本轮结束后应发送的通知（0 或 1 条）。
+    """feed(state, detail, self_id) -> list[str]：本轮结束后应发送的通知（0 或 1 条）。
 
     多端点：每个端点各自一个状态机实例（在 runtime 层维护映射），
     本类自身不感知端点身份——报警文案里的端点信息由 feed 的
@@ -54,17 +45,13 @@ class MonitorStateMachine:
         self._unreachable_alerted = False
         self._ever_alerted = False
 
-    def feed(self, state, detail='', endpoint_label=''):
-        """处理一轮探测结果，返回该轮应发通知列表（[(title, body)]）。
+    def feed(self, state, detail='', self_id=''):
+        """处理一轮探测结果，返回该轮应发通知列表（[str]）。
 
         分支顺序就是业务优先级：online 收尾一切；offline/unreachable
         各自走「计数 → 达阈值且未报 → 报警」的相同逻辑。
-        detail 非空时附加在报警正文尾部（比如“连接失败: ...”）。
-        endpoint_label：端点标识（URL 或名字），非空时拼进标题——
-        多端点场景下必须知道是哪台出的事；不传则文案与单端点时代一致。
+        self_id：机器人 QQ 号，拼进文案；拿不到时留空。
         """
-        # 前缀：有标签就拼（“端点名 】 ”），没标签保持原文案
-        prefix = ('【%s】 ' % endpoint_label) if endpoint_label else ''
         if state == probe.ONLINE:
             # 在线：清两个方向的计数；若之前报过故障，补发恢复通知并复位标记
             self._offline_count = 0
@@ -73,7 +60,7 @@ class MonitorStateMachine:
                 self._ever_alerted = False
                 self._offline_alerted = False
                 self._unreachable_alerted = False
-                return [(prefix + RECOVER_TITLE, RECOVER_BODY)]
+                return [RECOVERY_NOTICE.format(self_id=self_id)]
             return []
         if state == probe.OFFLINE:
             # 账号下线：清对向计数（unreachable），自己 +1
@@ -82,8 +69,7 @@ class MonitorStateMachine:
             if self._offline_count >= self.debounce and not self._offline_alerted:
                 self._offline_alerted = True
                 self._ever_alerted = True
-                return [(prefix + OFFLINE_ALERT_TITLE,
-                         OFFLINE_ALERT_BODY + ('\n详情：%s' % detail if detail else ''))]
+                return [OFFLINE_ALERT.format(self_id=self_id)]
             return []
         if state == probe.UNREACHABLE:
             # 服务不可达：镜像 offline 的逻辑
@@ -92,8 +78,7 @@ class MonitorStateMachine:
             if self._unreachable_count >= self.debounce and not self._unreachable_alerted:
                 self._unreachable_alerted = True
                 self._ever_alerted = True
-                return [(prefix + SERVICE_ALERT_TITLE,
-                         SERVICE_ALERT_BODY + ('\n详情：%s' % detail if detail else ''))]
+                return [SERVICE_ALERT.format(self_id=self_id)]
             return []
         # 防御：probe 之外的来源喂进来的未知状态，宁可炸出来也不静默吞
         raise ValueError('未知状态: %r' % state)

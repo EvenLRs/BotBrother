@@ -95,10 +95,11 @@ def run_once(cfg, chs, sm):
     worst = probe.ONLINE
     rank = {probe.ONLINE: 0, probe.OFFLINE: 1, probe.UNREACHABLE: 2}
     for ep in eps:
-        state, detail = probe.probe(ep['base'], ep['token'] or None, ep['timeout'])
+        state, detail, self_id = probe.probe(
+            ep['base'], ep['token'] or None, ep['timeout'])
         log('探测结果（%s）：%s（%s）' % (ep['label'], state, detail))
-        for title, body in sm.feed(state, detail, ep['label']):
-            send_all(chs, title, body)
+        for msg in sm.feed(state, detail, self_id):
+            send_all(chs, msg, '')
         if rank.get(state, 0) > rank.get(worst, 0):
             worst = state
     return worst

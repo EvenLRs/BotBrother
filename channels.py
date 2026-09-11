@@ -326,7 +326,7 @@ class TelegramChannel(Channel):
 
 
 class ServerChanChannel(Channel):
-    """Server酱·Turbo（微信推送）：POST {send_key}.send，表单 title + desp。"""
+    """Server 酱 Turbo（微信推送）：POST {send_key}.send，表单 title + desp。"""
 
     name = 'serverchan'
 

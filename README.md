@@ -134,7 +134,7 @@ python3 monitor.py --config config.json --test-alert # 向所有渠道发测试�
 | `feishu` | `hook_id` | 飞书机器人 |
 | `ntfy` | `topic`（可 `server`） | ntfy（iOS/Android/桌面，免注册） |
 | `telegram` | `bot_token` + `chat_id` | Telegram |
-| `serverchan` | `send_key` | Server酱·Turbo（微信推送） |
+| `serverchan` | `send_key` | Server 酱 Turbo（微信推送） |
 | `log` | — | 仅写日志不发送（兜底/自测） |
 
 ```json

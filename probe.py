@@ -69,6 +69,7 @@ def _request(base, token, timeout, style):
     req = urllib.request.Request(
         url, data=_body(style), method='POST',
         headers={'Content-Type': 'application/json'})
+    result_self_id = ['']
     if token:
         req.add_header('Authorization', 'Bearer ' + token)
     try:
@@ -88,7 +89,13 @@ def _request(base, token, timeout, style):
         parsed = json.loads(raw) if raw.strip() else None
     except ValueError:
         parsed = None
-    return status, parsed
+    # get_status 应答的 data.user_id 即机器人自身 QQ 号（self_id），
+    # 供告警文案使用；取不到就留空，文案退化为不带 self_id。
+    if isinstance(parsed, dict):
+        data = parsed.get('data')
+        if isinstance(data, dict) and data.get('user_id'):
+            result_self_id[0] = str(data['user_id'])
+    return status, parsed, result_self_id[0]
 
 
 class _Unreachable(Exception):
@@ -116,7 +123,10 @@ def _interpret(parsed):
 
 
 def probe(base, token=None, timeout=5):
-    """探测一个 OneBot v11 HTTP 端点，返回 (state, detail)。
+    """探测一个 OneBot v11 HTTP 端点，返回 (state, detail, self_id)。
+
+    self_id 取自 get_status 应答的 data.user_id；连接层失败时为空串。
+    （告警文案需要机器人 QQ 号；探测失败拿不到时由上层自行兜底。）
 
     主流程（见模块 docstring 的风格识别说明）：
       1. 已知风格 → 直接用；否则先试 path 再试 envelope
@@ -131,7 +141,7 @@ def probe(base, token=None, timeout=5):
     last_detail = ''
     for style in styles:
         try:
-            status, parsed = _request(base, token, timeout, style)
+            status, parsed, result_self_id = _request(base, token, timeout, style)
         except _Unreachable as e:
             last_detail = '连接失败: %s' % e
             # 拒连对两种风格无区别；但 path 拒连时先补验 envelope，
@@ -140,10 +150,10 @@ def probe(base, token=None, timeout=5):
                 try:
                     _request(base, token, timeout, 'envelope')
                 except _Unreachable:
-                    return UNREACHABLE, last_detail
+                    return UNREACHABLE, last_detail, ''
                 continue
             if cached:
-                return UNREACHABLE, last_detail
+                return UNREACHABLE, last_detail, ''
             continue
         if status == 404:
             last_detail = 'HTTP 404（路径不存在）'
@@ -151,7 +161,7 @@ def probe(base, token=None, timeout=5):
         if status >= 400:
             last_detail = 'HTTP %d' % status
             if status == 403:
-                return UNREACHABLE, 'HTTP 403（token 鉴权失败或未授权）'
+                return UNREACHABLE, 'HTTP 403（token 鉴权失败或未授权）', ''
             continue
         state = _interpret(parsed)
         if state is not None:
@@ -159,7 +169,7 @@ def probe(base, token=None, timeout=5):
             # 风格信息只进内部缓存，不进对外 detail（UI/报警不出现“path 风格”字样）
             detail = 'API 应答 online=%s' % (
                 'true' if state == ONLINE else 'false')
-            return state, detail
+            return state, detail, result_self_id
         last_detail = '应答不是合法 OneBot JSON'
         continue
-    return UNREACHABLE, last_detail or '无法识别端点'
+    return UNREACHABLE, last_detail or '无法识别端点', ''

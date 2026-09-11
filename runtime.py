@@ -314,7 +314,7 @@ class MonitorRuntime:
             with self.lock:
                 base, token, timeout = ep.base, ep._token, getattr(ep, 'timeout', 5)
                 label = ep.label
-            state, detail = probe.probe(base, token or None, timeout)
+            state, detail, self_id = probe.probe(base, token or None, timeout)
             self.log('探测结果（%s）：%s（%s）' % (label, state, detail))
             now = time.time()
             with self.lock:
@@ -325,9 +325,9 @@ class MonitorRuntime:
                 ep.last_probe_at = now
                 ep.probe_count += 1
                 ep.history.append((now, state))
-            # 端点自己的状态机，报警文案带上端点名
-            for title, body in ep.sm.feed(state, detail, label):
-                self._notify(title, body)
+            # 端点自己的状态机，报警文案带上机器人 QQ 号（探测应答里的 user_id）
+            for msg in ep.sm.feed(state, detail, self_id):
+                self._notify(msg, '')
             if rank.get(state, 0) > rank.get(worst, 0):
                 worst = state
         return worst
