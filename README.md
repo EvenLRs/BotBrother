@@ -1,5 +1,7 @@
 # BotBrother
 
+v1.0.0
+
 BotBrother is watching
 
 QQ Bot在线状态监视，账号下线或服务意外退出时第一时间通知到你。

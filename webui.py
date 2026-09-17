@@ -84,7 +84,7 @@ def _make_handler(rt, server, auth):
     """闭包工厂：Handler 类捕住 rt / server / auth。"""
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "BotBrother-webui/2.0"
+        server_version = "BotBrother-webui/1.0.0"
 
         # ---- 基础工具：统一收发 ----
 
