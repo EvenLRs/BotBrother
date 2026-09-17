@@ -54,6 +54,9 @@ sudo launchctl load -w /Library/LaunchDaemons/com.botbrother.monitor.plist
 tail -f /tmp/botbrother.log
 ```
 
+> `install.sh` 会用 Python 标准库 `plistlib` 就地生成 `/Library/LaunchDaemons/com.botbrother.monitor.plist`
+> （发布包不含 `macos/` 目录），并按传入的安装路径正确转义；Linux 侧用同仓库的 `systemd/botbrother.service` 生成单元。
+
 ### Docker镜像部署
 
 ```bash

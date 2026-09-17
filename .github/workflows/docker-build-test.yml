@@ -87,7 +87,8 @@ jobs:
               HTTPServer(('0.0.0.0', port), H).serve_forever()
           PY
 
-          # 2) 最小配置：监视假 OneBot，log 渠道，WebUI 回环
+          # 2) 最小配置：监视假 OneBot，log 渠道；config 与 Dockerfile HEALTHCHECK/CMD 统一放 /app/data/config.json。
+          #    data_dir 用 "."：认证数据写入同一可写目录 /app/data（镜像内已 chown botbrother），避免改路径后落盘失败。
           cat > test-config.json <<'JSON'
           {
             "interval": 5,
@@ -95,7 +96,7 @@ jobs:
               {"label": "ci-fake", "base": "http://172.17.0.1:3999", "token": "", "timeout": 3, "debounce": 2}
             ],
             "channels": [{"type": "log"}],
-            "webui": {"port": 8080, "bind": "0.0.0.0", "token": "ci-secret"}
+            "webui": {"port": 8080, "bind": "0.0.0.0", "data_dir": "."}
           }
           JSON
 
@@ -105,8 +106,8 @@ jobs:
 
           # 4) 起 BotBrother 容器（WebUI 模式；镜像默认 CMD 无 --webui，测试显式带参）
           docker run -d --name bb-test -p 18080:8080 \
-            -v "$PWD/test-config.json":/app/config.json:ro \
-            botbrother:ci-test python3 monitor.py --config /app/config.json --webui
+            -v "$PWD/test-config.json":/app/data/config.json:ro \
+            botbrother:ci-test python3 monitor.py --config /app/data/config.json --webui
 
           # 4.1) 就绪轮询：最多 30 次×2s 等 WebUI 端口可连（runner 冷启慢，死等 sleep 不可靠）
           READY=0
@@ -123,16 +124,60 @@ jobs:
           # 首轮探测（interval 5s）也给足时间
           sleep 6
 
-          # 5) API 应在线
-          CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18080/api/state)
-          [ "$CODE" = "401" ] && echo "[PASS] api rejects without token (401)" || { echo "[FAIL] expected 401, got $CODE"; exit 1; }
-          STATE=$(curl -sf -H "Authorization: Bearer ci-secret" http://127.0.0.1:18080/api/state | python3 -c "import sys,json;print(json.load(sys.stdin)['state'])")
-          [ "$STATE" = "online" ] && echo "[PASS] state=online" || { echo "[FAIL] state=$STATE"; docker logs bb-test 2>&1 | tail -10; exit 1; }
+          # 5) 认证流程（密码会话，取代已退役的 webui.token/Bearer）：
+          #    未登录 401 → /api/auth/setup → cookie 访问 /api/state → logout → login → 再访问。
+          #    所有 POST 需同源 Origin + 自定义头 X-BB-CSRF: 1；临时 CI 密码随机生成，不回显、不入日志。
+          BASE=http://127.0.0.1:18080
+          ORIGIN="$BASE"
+          COOKIE_JAR="$(mktemp)"
+          SETUP_BODY="$(mktemp)"
+          LOGIN_BODY="$(mktemp)"
+          trap 'rm -f "$COOKIE_JAR" "$SETUP_BODY" "$LOGIN_BODY"' EXIT
+          CI_PW="$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 20)"
+          chmod 600 "$SETUP_BODY" "$LOGIN_BODY"
+          printf '{"password":"%s","confirm":"%s"}' "$CI_PW" "$CI_PW" > "$SETUP_BODY"
+          printf '{"password":"%s"}' "$CI_PW" > "$LOGIN_BODY"
+          post() {  # post <path> <data-file|->  → 输出 HTTP 码（带 cookie jar / CSRF / Origin）
+            local path="$1" data="$2"
+            if [ "$data" = "-" ]; then
+              curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
+                -H "X-BB-CSRF: 1" -H "Origin: $ORIGIN" -X POST "$BASE$path"
+            else
+              curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
+                -H "Content-Type: application/json" -H "X-BB-CSRF: 1" -H "Origin: $ORIGIN" \
+                -X POST --data @"$data" "$BASE$path"
+            fi
+          }
+          state_of() { curl -sf -b "$COOKIE_JAR" "$BASE/api/state" | python3 -c "import sys,json;print(json.load(sys.stdin)['state'])"; }
 
-          # 6) 幕二：--once 健康检查（容器内直连假 OneBot 的 host 网络）
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/state")
+          [ "$CODE" = "401" ] && echo "[PASS] unauth /api/state 401" || { echo "[FAIL] expected 401, got $CODE"; exit 1; }
+
+          CODE=$(post /api/auth/setup "$SETUP_BODY")
+          [ "$CODE" = "200" ] && echo "[PASS] setup 200 (session cookie issued)" || { echo "[FAIL] setup got $CODE"; docker logs bb-test 2>&1 | tail -30; exit 1; }
+
+          STATE="$(state_of)"
+          [ "$STATE" = "online" ] && echo "[PASS] state=online (via session cookie)" || { echo "[FAIL] state=$STATE"; docker logs bb-test 2>&1 | tail -10; exit 1; }
+
+          # 认证数据确实落到可写目录：验证 data_dir 解析与写权限
+          docker exec -u botbrother bb-test sh -c 'test -s /app/data/webui_auth.json' \
+            && echo "[PASS] auth persisted to writable /app/data" \
+            || { echo "[FAIL] auth file missing (data_dir/permission?)"; docker logs bb-test 2>&1 | tail -30; exit 1; }
+
+          CODE=$(post /api/auth/logout -)
+          [ "$CODE" = "200" ] && echo "[PASS] logout 200" || { echo "[FAIL] logout got $CODE"; exit 1; }
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/state")
+          [ "$CODE" = "401" ] && echo "[PASS] post-logout /api/state 401" || { echo "[FAIL] expected 401 after logout got $CODE"; exit 1; }
+
+          CODE=$(post /api/auth/login "$LOGIN_BODY")
+          [ "$CODE" = "200" ] && echo "[PASS] login 200 (session cookie re-issued)" || { echo "[FAIL] login got $CODE"; docker logs bb-test 2>&1 | tail -30; exit 1; }
+          STATE="$(state_of)"
+          [ "$STATE" = "online" ] && echo "[PASS] state=online after re-login" || { echo "[FAIL] state=$STATE"; exit 1; }
+
+          # 6) 幕二：--once 健康检查（config 路径与容器统一为 /app/data/config.json）
           RC=0
-          docker run --rm --network host -v "$PWD/test-config.json":/app/config.json:ro \
-            botbrother:ci-test python3 monitor.py --config /app/config.json --once || RC=$?
+          docker run --rm --network host -v "$PWD/test-config.json":/app/data/config.json:ro \
+            botbrother:ci-test python3 monitor.py --config /app/data/config.json --once || RC=$?
           [ "$RC" = "0" ] && echo "[PASS] --once exits 0 when online" || { echo "[FAIL] --once rc=$RC"; exit 1; }
 
           # 7) 收尾：关假 OneBot → 服务不可达 → 容器日志应出现探测记录
@@ -151,12 +196,12 @@ jobs:
               {"label": "ci-dead", "base": "http://172.17.0.1:3998", "token": "", "timeout": 2, "debounce": 3}
             ],
             "channels": [{"type": "log"}],
-            "webui": {"port": 8080, "bind": "0.0.0.0", "token": ""}
+            "webui": {"port": 8080, "bind": "0.0.0.0", "data_dir": "."}
           }
           JSON
           RC=0
-          docker run --rm --network host -v "$PWD/test-config2.json":/app/config.json:ro \
-            botbrother:ci-test python3 monitor.py --config /app/config.json --once || RC=$?
+          docker run --rm --network host -v "$PWD/test-config2.json":/app/data/config.json:ro \
+            botbrother:ci-test python3 monitor.py --config /app/data/config.json --once || RC=$?
           if [ "$RC" -ne 1 ]; then echo "[FAIL] expected exit 1, got $RC"; exit 1; fi
           echo "[PASS] --once exits 1 when unreachable"
 
