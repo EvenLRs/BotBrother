@@ -3,156 +3,425 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
 <title>BotBrother</title>
+<script>
+/* 尽早应用主题，避免首屏闪色：只读取本地主题偏好（不产生/保存任何凭据），
+   无记录时跟随系统 prefers-color-scheme；默认兜底深色。 */
+(function(){
+  var t = null;
+  try { t = localStorage.getItem('bb_theme'); } catch(e) {}
+  if (t !== 'light' && t !== 'dark') {
+    t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches)
+      ? 'light' : 'dark';
+  }
+  document.documentElement.setAttribute('data-theme', t);
+})();
+</script>
 <style>
+  /* 主题令牌：default(深色，无 data-theme 时的兜底) + [data-theme="light"] 浅色。
+   * 所有颜色一律走令牌，禁止在组件里写死背景/文字色，保证两主题都覆盖到。 */
   :root{
-    --bg:#0f1115;--card:#181b22;--line:#262a34;--text:#e6e9ef;--dim:#8b93a3;
-    --ok:#2ecc71;--warn:#e67e22;--bad:#e74c3c;--accent:#4f8ef7;
+    color-scheme:dark;
+    --bg:#0f1115;--card:#181b22;--surface:#141821;--surface-line:#222631;
+    --control:#0c0e12;--control-line:#4a5262;--ghost-hover:#20242d;
+    --line:#262a34;--text:#e6e9ef;--dim:#8b93a3;--bar-none:#22262f;--backdrop:rgba(0,0,0,.6);
+    --ok:#2ecc71;--warn:#e67e22;--bad:#e74c3c;
+    /* 提示条文字色单独定义：在彩色软底上仍需满足 4.5:1，故比状态色更亮/更暗 */
+    --ok-msg:#5fd88a;--bad-msg:#ff8a7a;
+    --ok-soft:rgba(46,204,113,.12);--bad-soft:rgba(231,76,60,.12);
+    --on-accent:#fff;
+    --accent:#4f8ef7;          /* 交互/焦点指示 */
+    --accent-strong:#2f6fd6;   /* 填充按钮底色（白字对比 4.81:1） */
+    --accent-hover:#2563eb;
+    --r-lg:12px;--r-md:10px;--r-sm:8px;
+    --g1:8px;--g2:12px;--g3:16px;--g4:24px;
+    --fs-h1:18px;--fs-h2:14px;--fs:14px;--fs-sm:13px;--fs-xs:12px;
+  }
+  [data-theme="light"]{
+    color-scheme:light;
+    --bg:#f4f6f9;--card:#ffffff;--surface:#f7f8fb;--surface-line:#e4e7ee;
+    --control:#ffffff;--control-line:#9aa2b1;--ghost-hover:#eef1f6;
+    --line:#d7dbe3;--text:#1a1d23;--dim:#5b6270;--bar-none:#cdd3dd;--backdrop:rgba(15,23,42,.4);
+    --ok:#15803d;--warn:#b45309;--bad:#dc2626;
+    --ok-msg:#0f5c2e;--bad-msg:#b91c1c;
+    --ok-soft:rgba(21,128,61,.12);--bad-soft:rgba(220,38,38,.12);
+    --on-accent:#fff;
+    --accent:#2563eb;--accent-strong:#1d4ed8;--accent-hover:#1e40af;
   }
   *{box-sizing:border-box}
-  body{margin:0;font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
-    background:var(--bg);color:var(--text)}
-  .wrap{max-width:860px;margin:0 auto;padding:24px 16px 64px}
-  header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px}
-  h1{font-size:18px;margin:0}
-  .sub{color:var(--dim);font-size:12px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+  html{-webkit-text-size-adjust:100%;scroll-padding-bottom:96px;background:var(--bg)}
+  body{margin:0;font:var(--fs)/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    background:var(--bg);color:var(--text);
+    -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+  .wrap{max-width:860px;margin:0 auto;padding:var(--g4) var(--g3) 64px}
+  .skip{position:absolute;left:-9999px}
+  .skip:focus{left:16px;top:12px;z-index:10;background:var(--card);color:var(--text);
+    border:1px solid var(--line);border-radius:var(--r-sm);padding:8px 12px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:var(--g2);margin-bottom:var(--g3)}
+  h1{font-size:var(--fs-h1);line-height:1.25;margin:0;text-wrap:balance}
+  h2{font-size:var(--fs-h2);line-height:1.3;margin:0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);
+    padding:var(--g3);margin-bottom:var(--g3)}
+  .card-head{display:flex;align-items:center;justify-content:space-between;gap:var(--g2);flex-wrap:wrap}
   .badge{display:inline-flex;align-items:center;gap:8px;font-weight:600;border-radius:999px;padding:4px 14px}
   .badge .dot{width:10px;height:10px;border-radius:50%;background:currentColor}
   .badge.online{color:var(--ok)} .badge.offline{color:var(--warn)} .badge.unreachable{color:var(--bad)}
   .badge.none{color:var(--dim)}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:14px}
-  .kv .k{color:var(--dim);font-size:12px} .kv .v{font-size:16px;font-weight:600;margin-top:2px}
-  button{background:var(--accent);border:0;color:#fff;border-radius:8px;padding:8px 16px;
-    font-size:14px;cursor:pointer}
-  button.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
+  button{background:var(--accent-strong);border:0;color:var(--on-accent);border-radius:var(--r-sm);
+    padding:10px 16px;font-size:var(--fs);cursor:pointer;min-height:40px;
+    transition:background-color .15s ease,opacity .15s ease}
+  button:hover:not(:disabled){background:var(--accent-hover)}
   button:disabled{opacity:.5;cursor:default}
+  button.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
+  button.ghost:hover:not(:disabled){background:var(--ghost-hover)}
   button.danger{background:transparent;border:1px solid var(--bad);color:var(--bad)}
-  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-  input,select{background:#0c0e12;border:1px solid var(--line);color:var(--text);
-    border-radius:8px;padding:8px 10px;font-size:14px;width:100%}
-  label{display:block;margin:12px 0 4px;font-size:13px;color:var(--dim)}
-  .btn-sm{padding:4px 10px;font-size:12px;border-radius:6px}
-  table{width:100%;border-collapse:collapse;font-size:13px}
+  button.danger:hover:not(:disabled){background:var(--bad-soft)}
+  .btn-sm{padding:6px 12px;font-size:var(--fs-sm);min-height:32px;border-radius:6px}
+  .row{display:flex;gap:var(--g2);flex-wrap:wrap;align-items:center}
+  input,select{background:var(--control);border:1px solid var(--control-line);color:var(--text);
+    border-radius:var(--r-sm);padding:9px 10px;font-size:16px;width:100%;height:40px}
+  /* 表单控件统一继承页面字体：浏览器 UA 默认给 input/select/button 套 Arial 等系统控件字体，
+     与正文（-apple-system/PingFang SC）不一致，是“新增渠道”类型下拉看似间距/字形不齐的真实原因。
+     统一字体族后各控件用字一致；再固定同一高度（select 不遵循 line-height，故用 height 对齐），
+     使下拉与相邻普通字段的框高、间距完全一致。原生下拉弹层由系统绘制，内边距/圆角/行距不保证
+     生效（仅字体族、行高类声明在部分平台可被采纳）。 */
+  input,select,button{font-family:inherit}
+  select option{font-family:inherit;line-height:1.5}
+  label{display:block;margin:var(--g2) 0 4px;font-size:var(--fs-sm);color:var(--dim)}
+  label.field{display:flex;flex-direction:column;margin:var(--g2) 0 0}
+  input:focus-visible,select:focus-visible,button:focus-visible,a:focus-visible,
+  [tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  table{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
   td,th{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left}
   th{color:var(--dim);font-weight:500}
-  .msg{border-radius:8px;padding:10px 12px;margin:10px 0;font-size:13px;display:none}
-  .msg.ok{background:rgba(46,204,113,.12);color:var(--ok);display:block}
-  .msg.err{background:rgba(231,76,60,.12);color:var(--bad);display:block}
-  .ch-item{border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:10px}
-  .ch-head{display:flex;justify-content:space-between;align-items:center}
-  .ch-head b{font-size:13px}
-  .hist-bar{display:flex;gap:2px;height:28px;border-radius:6px;overflow:hidden;margin-top:12px}
+  .msg{border-radius:var(--r-sm);padding:10px 12px;margin:var(--g2) 0;font-size:var(--fs-sm);display:none}
+  .msg.ok{background:var(--ok-soft);color:var(--ok-msg);display:block}
+  .msg.err{background:var(--bad-soft);color:var(--bad-msg);display:block}
+  .empty{color:var(--dim);font-size:var(--fs-sm);padding:var(--g2) 0}
+  .ch-item{border:1px solid var(--line);border-radius:var(--r-md);padding:var(--g2);margin-top:var(--g2)}
+  .ch-head{display:flex;justify-content:space-between;align-items:center;gap:var(--g1)}
+  .ch-head b{font-size:var(--fs-sm)}
+  .hist-bar{display:flex;gap:2px;height:28px;border-radius:6px;overflow:hidden;margin-top:var(--g2)}
   .hist-bar i{flex:1;border-radius:1px;opacity:.9}
   .hist-bar i.online{background:var(--ok)} .hist-bar i.offline{background:var(--warn)}
-  .hist-bar i.unreachable{background:var(--bad)} .hist-bar i.none{background:#22262f}
-  footer{color:var(--dim);font-size:12px;text-align:center;margin-top:24px}
-  .note{font-size:12px;color:var(--dim)}
+  .hist-bar i.unreachable{background:var(--bad)} .hist-bar i.none{background:var(--bar-none)}
+  .note{font-size:var(--fs-sm);color:var(--dim);overflow-wrap:anywhere}
+  /* 设置分组：用间距与标题分层，而非更多线条 */
+  .group-title{font-size:var(--fs-sm);font-weight:600;color:var(--text);
+    margin:var(--g3) 0 var(--g1);padding:0}
+  .group-title:first-of-type{margin-top:0}
+  /* 分组标题行：标题 + 右侧操作（如“发测试通知”）；标题留白由本行统一管理 */
+  .group-head{display:flex;align-items:center;justify-content:space-between;
+    gap:var(--g2);flex-wrap:wrap;margin:var(--g3) 0 var(--g1)}
+  .group-head .group-title{margin:0}
+  /* 监视概览：仅展示已保存且生效的端点数量与启用渠道（来源 /api/state） */
+  #ov-body{margin-top:var(--g2)}
+  .ov-row{display:flex;gap:var(--g2);align-items:baseline}
+  .ov-row + .ov-row{margin-top:var(--g1)}
+  .ov-label{flex:0 0 auto;min-width:5em;color:var(--dim);font-size:var(--fs-sm)}
+  .ov-value{flex:1 1 auto;min-width:0;font-size:var(--fs-sm);overflow-wrap:anywhere}
+  .ov-value.is-empty{color:var(--dim)}
+  /* 实时状态：立即探测按钮下方与端点统计卡片之间，留出与按钮上方（卡片内边距）相等的间距 */
+  #ep-list{margin-top:var(--g3)}
+  /* 监视端点子卡片：降一层表面（更暗底色 + 更小半径，符合同心圆角） */
+  #ep-list .card{background:var(--surface);border-color:var(--surface-line);border-radius:var(--r-sm);
+    padding:var(--g2);margin-bottom:var(--g2)}
+  .ep-top{display:flex;align-items:center;justify-content:space-between;gap:var(--g2);flex-wrap:wrap}
+  .ep-id{display:flex;align-items:center;gap:10px;min-width:0}
+  .ep-title{font-size:var(--fs-sm);font-weight:600;overflow-wrap:anywhere}
+  .ep-badge{font-size:var(--fs-xs);padding:2px 10px}
+  .ep-meta{font-size:var(--fs-xs);color:var(--dim);font-variant-numeric:tabular-nums}
+  /* 表单底部动作：普通流（非粘性），保证窄屏/缩放/键盘焦点都不会被覆盖 */
+  .form-actions{display:flex;gap:var(--g2);justify-content:flex-end;
+    flex-wrap:wrap;margin-top:var(--g3)}
+  /* 危险操作：左侧“标题+说明”一栏，按钮在整块内容区里垂直居中、水平靠右；
+     按钮不参与收缩、文案不换行，窄屏时由左侧说明换行让位，避免按钮被压变形或遮挡 */
+  .danger-row{display:flex;align-items:center;justify-content:space-between;gap:var(--g3)}
+  .danger-text{min-width:0}
+  .danger-row .note{margin-top:var(--g1)}
+  .danger-row > button{flex:0 0 auto;white-space:nowrap}
+  td{overflow-wrap:anywhere}
+  [hidden]{display:none !important}
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:var(--g3);overflow-x:auto}
+  .tab{background:transparent;border:0;border-bottom:2px solid transparent;color:var(--dim);
+    border-radius:0;padding:10px 14px;min-height:40px;font-weight:600;white-space:nowrap}
+  .tab:hover:not([aria-selected="true"]){color:var(--text)}
+  .tab[aria-selected="true"]{color:var(--text);border-bottom-color:var(--accent)}
+  .tab:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  /* 关闭程序确认对话框：固定居中、可访问（role=dialog + 焦点管理 + Escape 取消） */
+  .modal{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;
+    padding:var(--g3)}
+  .modal-backdrop{position:absolute;inset:0;background:var(--backdrop)}
+  .modal-panel{position:relative;background:var(--card);border:1px solid var(--line);
+    border-radius:var(--r-lg);padding:var(--g3);width:100%;max-width:400px;max-height:90vh;
+    overflow:auto;box-shadow:0 12px 40px rgba(0,0,0,.35)}
+  @media (max-width:560px){
+    .wrap{padding:var(--g3) 12px 48px}
+    header{flex-wrap:wrap}
+  }
+  @media (prefers-reduced-motion: no-preference){
+    button:active:not(:disabled){transform:scale(.96)}
+  }
+  @media (prefers-reduced-motion: reduce){
+    *{transition:none !important;animation:none !important}
+  }
 </style>
 </head>
 <body>
+<a class="skip" href="#app">跳到主要内容</a>
 <div class="wrap">
   <header>
     <div>
       <h1>BotBrother</h1>
-      <div class="sub" id="sub">加载中……</div>
     </div>
-    <span class="badge none" id="badge"><span class="dot"></span><span id="badge-text">未知</span></span>
+    <div class="row">
+      <button class="ghost btn-sm" id="btn-theme" type="button" onclick="toggleTheme()"
+              aria-label="切换到浅色主题" title="切换到浅色主题">深色</button>
+      <span class="badge none" id="badge"><span class="dot"></span><span id="badge-text">待探测</span></span>
+      <button class="ghost btn-sm" id="btn-logout" style="display:none" onclick="doLogout()">退出</button>
+    </div>
   </header>
 
-  <div class="msg" id="msg"></div>
+  <div class="msg" id="msg" role="status" aria-live="polite"></div>
 
-  <div class="card">
-    <div class="row" style="justify-content:space-between">
-      <b>实时状态</b>
-      <div class="row">
-        <button class="ghost btn-sm" onclick="refresh(true)">立即探测</button>
-        <button class="btn-sm" onclick="testAlert()" id="btn-test">发测试通知</button>
+  <div id="auth">
+    <div class="card" id="auth-setup" style="display:none">
+      <h2>首次设置登录密码</h2>
+      <div class="note">该密码用于登录 BotBrother WebUI。</div>
+      <label class="field" for="s-pass">设置密码（至少 6 位）
+        <input id="s-pass" type="password" autocomplete="new-password">
+      </label>
+      <label class="field" for="s-pass2">确认密码
+        <input id="s-pass2" type="password" autocomplete="new-password"
+               onkeydown="if(event.key==='Enter')doSetup()">
+      </label>
+      <div class="row" style="margin-top:12px">
+        <button id="btn-setup" onclick="doSetup()">设置密码并登录</button>
       </div>
     </div>
-    <div id="ep-list"></div>
-    <div class="note">每端点一行：绿=在线 橙=账号下线 红=服务不可达；色条为最近 120 轮</div>
-  </div>
-
-  <div class="card">
-    <div class="row" style="justify-content:space-between">
-      <b>通知记录</b>
-      <button class="ghost btn-sm" onclick="location.href='/api/history.csv'">导出 CSV</button>
-    </div>
-    <table id="notif"><tr><th>时间</th><th>通知</th><th>渠道结果</th></tr></table>
-    <div class="note">最多显示最近 20 条</div>
-  </div>
-
-  <div class="card">
-    <div class="row" style="justify-content:space-between">
-      <b>设置</b>
-      <div class="row">
-        <button class="ghost btn-sm" onclick="loadConfig()">重新加载</button>
-        <button class="btn-sm" onclick="saveConfig()" id="btn-save">保存并生效</button>
+    <div class="card" id="auth-login" style="display:none">
+      <h2>登录</h2>
+      <div class="note">请输入 WebUI 登录密码。</div>
+      <label class="field" for="l-pass">密码
+        <input id="l-pass" type="password" autocomplete="current-password"
+               onkeydown="if(event.key==='Enter')doLogin()">
+      </label>
+      <div class="row" style="margin-top:12px">
+        <button id="btn-login" onclick="doLogin()">登录</button>
       </div>
     </div>
+    <div class="card" id="auth-locked" style="display:none">
+      <h2>认证数据损坏，已锁定</h2>
+      <div class="note">本机认证文件损坏或格式不受支持。为防止被接管，已同时拒绝登录与重新设置。
+        请在运行程序的机器上<b>先停止服务</b>，再删除认证文件（默认路径为 config.json 同目录下的 data/webui_auth.json；Docker 默认 /app/data/data/webui_auth.json），
+        或运行 <code>python monitor.py --config &lt;你的 config.json 路径&gt; --reset-webui-password</code>，
+        之后重启服务再重新设置密码。运行中的进程内存里仍有旧会话，不重启不会生效。</div>
+    </div>
+  </div>
 
-    <div id="cfg-form" style="display:none">
-      <div style="display:grid;grid-template-columns:1fr;gap:12px">
-        <div>
-          <label>轮询间隔（秒，全部端点共用）</label>
-          <input id="c-interval" type="number" min="5" max="86400">
+  <main id="app" style="display:none">
+    <div class="tabs" role="tablist" aria-label="页面分区">
+      <button class="tab" role="tab" id="tab-monitor" aria-selected="true"
+              aria-controls="panel-monitor" tabindex="0" onclick="selectTab('monitor')">监视</button>
+      <button class="tab" role="tab" id="tab-settings" aria-selected="false"
+              aria-controls="panel-settings" tabindex="-1" onclick="selectTab('settings')">设置</button>
+    </div>
+
+    <section id="panel-monitor" role="tabpanel" aria-labelledby="tab-monitor" tabindex="0">
+      <div class="card" id="monitor-overview">
+        <div class="card-head">
+          <h2>监视概览</h2>
+        </div>
+        <div id="ov-body">
+          <div class="ov-row">
+            <span class="ov-label">端点数量</span>
+            <span class="ov-value" id="ov-endpoints">—</span>
+          </div>
+          <div class="ov-row">
+            <span class="ov-label">启用渠道</span>
+            <span class="ov-value" id="ov-channels">—</span>
+          </div>
         </div>
       </div>
-      <label>监视端点（OneBot HTTP 服务，可多个）</label>
-      <div id="eps"></div>
-      <div class="row" style="margin-top:10px">
-        <button class="ghost btn-sm" onclick="addEndpoint()">添加端点</button>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>实时状态</h2>
+          <button class="ghost btn-sm" onclick="refresh(true)">立即探测</button>
+        </div>
+        <div id="ep-list"></div>
+        <div class="note">每端点一行：绿=在线 橙=账号下线 红=服务不可达；色条为最近 120 轮</div>
       </div>
 
-      <label>通知渠道</label>
-      <div id="channels"></div>
-      <div class="row" style="margin-top:10px">
-        <select id="ch-add-type">
-          <option value="bark">Bark</option>
-          <option value="wecom">企业微信</option>
-          <option value="dingtalk">钉钉</option>
-          <option value="feishu">飞书</option>
-          <option value="ntfy">ntfy</option>
-          <option value="telegram">Telegram</option>
-          <option value="serverchan">Server 酱 Turbo</option>
-          <option value="log">log（仅日志）</option>
-        </select>
-        <button class="ghost btn-sm" onclick="addChannel()">添加渠道</button>
+      <div class="card">
+        <div class="card-head">
+          <h2>通知记录</h2>
+          <button class="ghost btn-sm" onclick="location.href='/api/history.csv'">导出 CSV</button>
+        </div>
+        <table id="notif"><tr><th>时间</th><th>通知</th><th>渠道结果</th></tr></table>
+        <div class="note">最多显示最近 20 条</div>
+      </div>
+    </section>
+
+    <section id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h2>设置</h2>
+        </div>
+
+        <div id="cfg-form" style="display:none">
+          <h3 class="group-title">通用</h3>
+          <label class="field" for="c-interval">轮询间隔（秒，全部端点共用）
+            <input id="c-interval" type="number" min="5" max="86400">
+          </label>
+
+          <h3 class="group-title">监视端点</h3>
+          <div id="eps"></div>
+          <div class="row" style="margin-top:10px">
+            <button class="ghost btn-sm" onclick="addEndpoint()">添加端点</button>
+          </div>
+
+          <div class="group-head">
+            <h3 class="group-title">通知渠道</h3>
+            <button class="btn-sm" id="btn-test" onclick="testAlert()">发测试通知</button>
+          </div>
+          <div class="note">测试发送使用<b>已保存</b>的渠道；若刚改过渠道，请先点底部“保存并生效”再测试。</div>
+          <div id="channels"></div>
+          <div class="row" style="margin-top:10px">
+            <button class="ghost btn-sm" id="btn-add-channel" aria-expanded="false"
+                    aria-controls="ch-draft" onclick="openChannelDraft()">新增渠道</button>
+          </div>
+          <div id="ch-draft" class="ch-item" hidden>
+            <div class="ch-head"><b>新增渠道</b></div>
+            <label class="field" for="ch-add-type">类型
+              <select id="ch-add-type" onchange="renderChannelDraftFields()">
+                <option value="bark">Bark</option>
+                <option value="wecom">企业微信</option>
+                <option value="dingtalk">钉钉</option>
+                <option value="feishu">飞书应用机器人</option>
+                <option value="ntfy">ntfy</option>
+                <option value="telegram">Telegram</option>
+                <option value="serverchan">Server 酱 Turbo</option>
+                <option value="log">仅日志</option>
+              </select>
+            </label>
+            <div id="ch-draft-fields"></div>
+            <div class="row" style="margin-top:10px">
+              <button class="btn-sm" id="btn-ch-add-confirm" onclick="confirmChannelDraft()">添加</button>
+              <button class="ghost btn-sm" onclick="cancelChannelDraft()">取消</button>
+            </div>
+          </div>
+
+          <h3 class="group-title">WebUI</h3>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">
+            <label class="field" for="w-port">端口
+              <input id="w-port" type="number" min="1" max="65535">
+            </label>
+            <label class="field" for="w-bind">监听地址
+              <input id="w-bind">
+            </label>
+            <label class="field" for="w-data-dir">认证数据目录
+              <input id="w-data-dir">
+            </label>
+          </div>
+          <div class="note">端口/监听地址/认证数据目录修改需重启程序；其他修改保存后立即生效。登录密码在页面右上角“退出”后可重新登录，首次访问会要求设置。</div>
+
+          <div class="form-actions">
+            <button class="ghost btn-sm js-reload" onclick="reloadConfig()">放弃修改并重新加载</button>
+            <button class="btn-sm js-save" onclick="saveConfig(this)">保存并生效</button>
+          </div>
+        </div>
       </div>
 
-      <label>WebUI</label>
-      <div style="display:grid;grid-template-columns:1fr 2fr 2fr;gap:12px">
-        <div><label>端口</label><input id="w-port" type="number" min="1" max="65535"></div>
-        <div><label>监听地址</label><input id="w-bind"></div>
-        <div><label>管理令牌（保护 API，可空）</label><input id="w-token"></div>
+      <div class="card">
+        <div class="danger-row">
+          <div class="danger-text">
+            <h2>危险操作</h2>
+            <div class="note">关闭当前监视程序需要已登录 WebUI，并再次输入当前登录密码确认。</div>
+          </div>
+          <button class="danger btn-sm" id="btn-shutdown" onclick="openShutdown()">关闭程序</button>
+        </div>
       </div>
-      <div class="note">端口/监听地址修改需重启程序；其他修改保存后立即生效。密钥显示为 **** 时表示沿用原值，改动则覆盖。</div>
-    </div>
+    </section>
+
+  </main>
+</div>
+
+<div id="shutdown-modal" class="modal" hidden>
+  <div class="modal-backdrop" onclick="cancelShutdown()"></div>
+  <div class="modal-panel" role="dialog" aria-modal="true"
+       aria-labelledby="sd-title" aria-describedby="sd-desc">
+    <h2 id="sd-title">确认关闭程序</h2>
+    <div class="note" id="sd-desc">请输入<strong>当前 WebUI 登录密码</strong>以确认关闭；关闭后需重新启动程序。</div>
+    <form id="sd-form" onsubmit="event.preventDefault(); confirmShutdown()">
+      <label class="field" for="sd-pass">当前登录密码
+        <input id="sd-pass" type="password" autocomplete="current-password">
+      </label>
+      <div class="msg err" id="sd-err" role="alert" hidden></div>
+      <div class="form-actions">
+        <button class="ghost btn-sm" type="button" id="sd-cancel" onclick="cancelShutdown()">取消</button>
+        <button class="danger btn-sm" type="submit" id="sd-confirm">确认关闭</button>
+      </div>
+    </form>
   </div>
-
-  <div class="card">
-    <div class="row" style="justify-content:space-between">
-      <b>危险操作</b>
-      <button class="danger btn-sm" onclick="shutdown()">关停程序</button>
-    </div>
-    <div class="note">向系统管理工具发出退出请求（设置过管理令牌才可用）。</div>
-  </div>
-
-  <footer></footer>
 </div>
 
 <script>
 /* ================= 前端脚本结构 =================
- * 整体分四块：
+ * 整体分五块：
  *   1) 工具函数：fmtDur/fmtTs 时间格式化、showMsg 顶部消息条、api() 统一请求
- *   2) 数据渲染：refresh() 拉实时状态并刷页面；testAlert() 发测试通知
- *   3) 配置编辑：chEditor() 渲染单渠道卡片；loadConfig/saveConfig 读写后端配置
- *   4) 生命周期：页尾 refresh()+loadConfig() 首屏加载，setInterval 5s 自动刷新
- * 与后端交互全部走 /api/*，鉴权 token 存 localStorage（key: qqmon_token）。
+ *   2) 认证：authStatus/boot 决定显示 设置密码 / 登录 / 锁定 / 主界面；退出按钮
+ *   3) 数据渲染：refresh() 拉实时状态并刷页面；testAlert() 发测试通知
+ *   4) 配置编辑：chEditor() 渲染单渠道卡片；loadConfig/saveConfig 读写后端配置
+ *   5) 生命周期：boot() 首屏加载，登录后 setInterval 5s 自动刷新
+ *   另含主题（浅色/深色）切换：仅把“主题”偏好写入 localStorage，绝不保存口令/令牌。
+ * 与后端交互全部走 /api/*：会话用 HttpOnly Cookie 维持，POST 需带自定义 CSRF 头；
+ * 不在 URL / localStorage 中保存任何口令或令牌（localStorage 只存 bb_theme）。
  */
 const $ = id => document.getElementById(id);
 let timer = null;
+
+/* ---------- 主题（浅色/深色） ----------
+ * 仅持久化“主题”这一个偏好到 localStorage；不保存任何凭据/令牌。
+ * 首次访问无记录时跟随系统 prefers-color-scheme；用户在页头切换后写入本地并长期记忆。
+ * 首屏防闪色由 <head> 内联脚本先行设置 data-theme，这里负责按钮文案/事件与系统变化同步。 */
+const THEME_KEY = 'bb_theme';
+function systemTheme(){
+  return (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches)
+    ? 'light' : 'dark';
+}
+function storedTheme(){
+  try{ const t = localStorage.getItem(THEME_KEY); return (t==='light'||t==='dark') ? t : null; }
+  catch(e){ return null; }
+}
+function currentTheme(){
+  return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+}
+function updateThemeButton(theme){
+  const b = $('btn-theme'); if(!b) return;
+  const next = theme === 'light' ? '深色' : '浅色';
+  b.textContent = theme === 'light' ? '浅色' : '深色';
+  b.setAttribute('aria-label', '当前' + (theme==='light'?'浅色':'深色') + '主题，切换到' + next + '主题');
+  b.title = b.getAttribute('aria-label');
+}
+function applyTheme(theme, persist){
+  const t = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', t);
+  if(persist){ try{ localStorage.setItem(THEME_KEY, t); }catch(e){ /* 无本地存储时仅本次生效 */ } }
+  updateThemeButton(t);
+}
+function toggleTheme(){
+  applyTheme(currentTheme() === 'light' ? 'dark' : 'light', true);
+}
+function initTheme(){
+  applyTheme(storedTheme() || systemTheme(), false);   // 首次跟随系统（不写入本地）
+  const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)');
+  if(!mq) return;
+  const onSystem = () => { if(!storedTheme()) applyTheme(systemTheme(), false); };
+  if(mq.addEventListener) mq.addEventListener('change', onSystem);
+  else if(mq.addListener) mq.addListener(onSystem);
+}
 
 /* 秒数 → 人话时长（时/分/秒），null 显示 — */
 function fmtDur(sec){
@@ -171,29 +440,125 @@ function fmtTs(ts){
 }
 const STATE_TXT = {online:'QQ 在线', offline:'账号已下线', unreachable:'服务不可达', none:'未知'};
 
+/* 页头汇总文案：按「全部已生效端点」的逐端点状态给出五种结论，未知/零端点给中性态。
+ * 真值表（n=端点数，状态 ∈ online/offline/unreachable；null=尚未探测）：
+ *   n=0                                   → 暂无端点            (none)
+ *   任一状态非三态（null/未知）           → 待探测              (none)   ← 不得误报“所有账号在线”
+ *   全部 unreachable                      → 所有终端离线        (unreachable)
+ *   存在 unreachable 且非全部             → 部分终端离线        (unreachable) ← 混合优先终端故障
+ *   全部 offline                          → 所有账号离线        (offline)
+ *   存在 offline 但非全部（且无 unreachable）→ 部分账号离线     (offline)
+ *   其余（全部 online）                   → 所有账号在线        (online)
+ * 去抖语义在服务端状态机里保持不变；此处只做展示层汇总，未知不等于离线。 */
+const AGG = {
+  no_endpoints:     {text:'暂无端点',     level:'none'},
+  pending:          {text:'待探测',       level:'none'},
+  all_unreachable:  {text:'所有终端离线', level:'unreachable'},
+  some_unreachable: {text:'部分终端离线', level:'unreachable'},
+  all_offline:      {text:'所有账号离线', level:'offline'},
+  some_offline:     {text:'部分账号离线', level:'offline'},
+  all_online:       {text:'所有账号在线', level:'online'},
+};
+function aggregateState(states){
+  const list = Array.isArray(states) ? states : [];
+  if(!list.length) return AGG.no_endpoints;
+  if(list.some(st => st !== 'online' && st !== 'offline' && st !== 'unreachable')) return AGG.pending;
+  const nUnreachable = list.filter(st => st === 'unreachable').length;
+  const nOffline = list.filter(st => st === 'offline').length;
+  if(nUnreachable === list.length) return AGG.all_unreachable;
+  if(nUnreachable > 0) return AGG.some_unreachable;
+  if(nOffline === list.length) return AGG.all_offline;
+  if(nOffline > 0) return AGG.some_offline;
+  return AGG.all_online;
+}
+
 function showMsg(text, ok){
   const el = $('msg');
   el.textContent = text;
   el.className = 'msg ' + (ok?'ok':'err');
   clearTimeout(el._t);
-  el._t = setTimeout(()=>{el.className='msg';}, 5000);
+  // 成功提示自动消失；错误保留到下一次操作，避免用户错过失败原因
+  if(ok){ el._t = setTimeout(()=>{ el.className='msg'; el.textContent=''; }, 5000); }
 }
 
-/* 统一 API 请求：自动带 Bearer token；遇 401 弹窗要 token 重试一次；
- * 非 2xx 抛异常（带后端 error 字段）。 */
+/* 统一 API 请求：同源 Cookie 会话 + 自定义 CSRF 头；401 → 切到登录界面；
+ * 非 2xx 抛异常（带后端 error 字段）。不保存任何口令/令牌。 */
 async function api(path, opts){
-  const headers = {'Content-Type':'application/json'};
-  const saved = localStorage.getItem('qqmon_token');
-  if(saved) headers['Authorization'] = 'Bearer ' + saved;
-  const r = await fetch(path, {...opts, headers});
-  if(r.status===401){
-    const t = prompt('该 WebUI 已设置管理令牌，请输入：');
-    if(t!==null){ localStorage.setItem('qqmon_token', t); return api(path, opts); }
-    throw new Error('未授权');
-  }
+  const headers = {'Content-Type':'application/json', 'X-BB-CSRF':'1'};
+  const r = await fetch(path, {...opts, headers, credentials:'same-origin'});
   const data = await r.json().catch(()=>({}));
+  if(r.status===401 && !path.startsWith('/api/auth/')){
+    showAuth('login');
+    throw new Error(data.error || '需要登录');
+  }
   if(!r.ok) throw new Error(data.error || ('HTTP '+r.status));
   return data;
+}
+
+/* ---------- 认证界面 ---------- */
+function hideAuth(){
+  $('auth').style.display='none';
+  for(const id of ['auth-setup','auth-login','auth-locked']) $(id).style.display='none';
+}
+function showAuth(mode){
+  if(timer){ clearInterval(timer); timer=null; }
+  $('app').style.display='none';
+  $('btn-logout').style.display='none';
+  $('auth').style.display='block';
+  for(const id of ['auth-setup','auth-login','auth-locked']) $(id).style.display='none';
+  $(mode==='setup'?'auth-setup':(mode==='locked'?'auth-locked':'auth-login')).style.display='block';
+  if(mode==='setup') $('s-pass').focus();
+  else if(mode==='login') $('l-pass').focus();
+}
+function showApp(){
+  hideAuth();
+  $('app').style.display='block';
+  $('btn-logout').style.display='inline-block';
+  selectTab('monitor');            // 默认进入“监视”；不触碰设置表单
+  refresh(); loadConfig();         // loadConfig 仅在登录后执行一次，切 Tab 不再调用
+  if(timer) clearInterval(timer);
+  timer = setInterval(refresh, 5000);
+}
+async function boot(){
+  let st;
+  try{ st = await api('/api/auth/status'); }
+  catch(e){ if(!/需要登录/.test(e.message)) showMsg('无法连接后端：'+e.message, false); return; }
+  if(st.locked){ showAuth('locked'); return; }
+  if(st.needs_setup){ showAuth('setup'); return; }
+  if(!st.authenticated){ showAuth('login'); return; }
+  showApp();
+}
+async function doSetup(){
+  const p1 = $('s-pass').value, p2 = $('s-pass2').value;
+  const mark = (el, bad) => el.setAttribute('aria-invalid', bad ? 'true' : 'false');
+  mark($('s-pass'), false); mark($('s-pass2'), false);
+  if(p1.length < 6){ mark($('s-pass'), true); $('s-pass').focus(); showMsg('密码至少 6 位。', false); return; }
+  if(p1 !== p2){ mark($('s-pass2'), true); $('s-pass2').focus(); showMsg('两次输入的密码不一致。', false); return; }
+  const btn = $('btn-setup'); btn.disabled = true; btn.textContent = '设置中…';
+  try{
+    await api('/api/auth/setup', {method:'POST', body: JSON.stringify({password:p1, confirm:p2})});
+    $('s-pass').value=''; $('s-pass2').value='';
+    showMsg('密码已设置，已登录。', true);
+    showApp();
+  }catch(e){ showMsg('设置失败：'+e.message, false); }
+  finally{ btn.disabled = false; btn.textContent = '设置密码并登录'; }
+}
+async function doLogin(){
+  const p = $('l-pass').value;
+  const input = $('l-pass');
+  input.setAttribute('aria-invalid', 'false');
+  const btn = $('btn-login'); btn.disabled = true; btn.textContent = '登录中…';
+  try{
+    await api('/api/auth/login', {method:'POST', body: JSON.stringify({password:p})});
+    input.value='';
+    showApp();
+  }catch(e){ input.setAttribute('aria-invalid', 'true'); input.focus(); showMsg('登录失败：'+e.message, false); }
+  finally{ btn.disabled = false; btn.textContent = '登录'; }
+}
+async function doLogout(){
+  try{ await api('/api/auth/logout', {method:'POST'}); }catch(e){ /* 忽略 */ }
+  showMsg('已退出登录。', true);
+  showAuth('login');
 }
 
 /* 拉取 /api/state 并把整页数据渲染一遍：
@@ -202,43 +567,57 @@ async function refresh(now){
   let s;
   try{ s = await api('/api/state' + (now?'?now=1':'')); }
   catch(e){ showMsg('刷新失败：'+e.message, false); return; }
-  $('badge').className = 'badge ' + (s.state||'none');
-  $('badge-text').textContent = STATE_TXT[s.state] || '未知';
-  $('sub').textContent = '端点 ' + (s.endpoints? s.endpoints.length : 0) + ' 个 · 间隔 ' + s.interval + 's'
-    + ' · 渠道 ' + (s.channels_active.join(', ') || '无');
+  const agg = aggregateState((s.endpoints||[]).map(ep => ep.state));
+  $('badge').className = 'badge ' + agg.level;
+  $('badge-text').textContent = agg.text;
+  // 监视概览：只呈现 /api/state 里“已保存且已生效”的数据（不读设置表单草稿，故未保存编辑不计入）
+  const ovEps = $('ov-endpoints');
+  ovEps.textContent = (s.endpoints||[]).length ? (s.endpoints.length + ' 个') : '暂无端点';
+  ovEps.classList.toggle('is-empty', !(s.endpoints||[]).length);
+  const ovChs = $('ov-channels');
+  const chNames = (s.channels_active||[]).map(chName);
+  ovChs.textContent = chNames.length ? chNames.join('、') : '暂无启用渠道';
+  ovChs.classList.toggle('is-empty', !chNames.length);
 
   const box = $('ep-list');
   box.innerHTML = '';
+  if(!(s.endpoints||[]).length){
+    const empty = document.createElement('div');
+    empty.className = 'empty';
+    empty.textContent = '暂无端点';
+    box.appendChild(empty);
+  }
   for(const ep of (s.endpoints||[])){
     const card = document.createElement('div');
     card.className = 'card';
-    card.style.marginBottom = '10px';
     const head = document.createElement('div');
-    head.className = 'row';
-    head.style.justifyContent = 'space-between';
+    head.className = 'ep-top';
     const left = document.createElement('div');
+    left.className = 'ep-id';
     const b = document.createElement('b');
+    b.className = 'ep-title';
     b.textContent = ep.label;
-    b.style.fontSize = '13px';
     const badge = document.createElement('span');
-    badge.className = 'badge ' + (ep.state||'none');
-    badge.innerHTML = '<span class="dot"></span>' + (STATE_TXT[ep.state]||'未知');
-    badge.style.fontSize = '12px';
-    badge.style.padding = '2px 10px';
+    badge.className = 'badge ep-badge ' + (ep.state||'none');
+    badge.innerHTML = '<span class="dot" aria-hidden="true"></span>' + (STATE_TXT[ep.state]||'未知');
     left.appendChild(b); left.appendChild(badge);
-    left.style.display = 'flex'; left.style.gap = '10px'; left.style.alignItems = 'center';
     const meta = document.createElement('span');
-    meta.className = 'note';
+    meta.className = 'ep-meta';
     meta.textContent = (ep.state_since? '持续 '+fmtDur(Date.now()/1000-ep.state_since) : '—')
       + ' · 已探测 ' + (ep.probe_count||0) + ' 次';
     head.appendChild(left); head.appendChild(meta);
     card.appendChild(head);
-    const detail = document.createElement('div');
-    detail.className = 'note';
-    detail.textContent = ep.state_detail || '';
-    card.appendChild(detail);
+    // 仅当存在故障/错误详情时渲染（正常在线/离线不再显示重复说明，也不留空行）
+    if(ep.state_detail){
+      const detail = document.createElement('div');
+      detail.className = 'note';
+      detail.textContent = ep.state_detail;
+      card.appendChild(detail);
+    }
     const bar = document.createElement('div');
     bar.className = 'hist-bar';
+    bar.setAttribute('role', 'img');
+    bar.setAttribute('aria-label', ep.label + ' 最近探测状态色条');
     const h = (ep.history||[]).slice(-120);
     for(const [ts, st] of h){
       const i = document.createElement('i');
@@ -252,25 +631,31 @@ async function refresh(now){
 
   const tb = $('notif');
   while(tb.rows.length>1) tb.deleteRow(1);
+  if(!(s.notifications||[]).length){
+    const tr = tb.insertRow();
+    const td = tr.insertCell();
+    td.colSpan = 3; td.className = 'empty'; td.textContent = '暂无通知';
+  }
   for(const n of (s.notifications||[])){
     const tr = tb.insertRow();
     tr.insertCell().textContent = fmtTs(n.ts);
     tr.insertCell().textContent = n.title;
-    const res = (n.results||[]).map(r=>r.channel+(r.ok?'✓':'✗')).join(' ') || '—';
+    const res = (n.results||[]).map(r=>chName(r.channel)+(r.ok?'✓':'✗')).join(' ') || '—';
     tr.insertCell().textContent = res;
   }
 }
 
 /* 发测试通知：POST /api/test-alert，把逐渠道成败拼进提示条。 */
 async function testAlert(){
-  $('btn-test').disabled = true;
+  const btn = $('btn-test'); const label = btn.textContent;
+  btn.disabled = true; btn.textContent = '发送中…';
   try{
     const r = await api('/api/test-alert', {method:'POST'});
-    const lines = (r.results||[]).map(x=>x.channel+(x.ok?' ✓':' ✗'+(x.error?'('+x.error.slice(0,60)+')':''))).join('，');
+    const lines = (r.results||[]).map(x=>chName(x.channel)+(x.ok?' ✓':' ✗'+(x.error?'('+x.error.slice(0,60)+')':''))).join('，');
     showMsg('测试通知已发：'+(lines||'无渠道'), true);
     refresh();
   }catch(e){ showMsg('发送失败：'+e.message, false); }
-  $('btn-test').disabled = false;
+  finally{ btn.disabled = false; btn.textContent = label; }
 }
 
 /* 端点编辑卡片：名称/base/token/超时/去抖 五字段一卡。 */
@@ -289,25 +674,26 @@ function epEditor(item){
                   ['base','OneBot 地址'],
                   ['token','访问令牌（可空）']];
   for(const [f,label] of fields){
-    const lb = document.createElement('label'); lb.textContent = label;
-    div.appendChild(lb);
+    const lb = document.createElement('label');
+    lb.className = 'field';
     const inp = document.createElement('input');
     inp.dataset.epfield = f; inp.value = item[f]||'';
     if(f==='base') inp.placeholder = 'http://127.0.0.1:3000';
-    if(f==='token') inp.placeholder = '留空沿用已保存值（****）';
-    div.appendChild(inp);
+    if(f==='base') inp.inputMode = 'url';
+    if(f==='token'){ inp.placeholder = '留空沿用已保存值（****）'; inp.autocomplete = 'off'; }
+    lb.append(label, inp);
+    div.appendChild(lb);
   }
   const nums = document.createElement('div');
   nums.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:10px';
   for(const [f,label,min,max] of [['timeout','超时（秒）',1,60],['debounce','去抖轮数',1,10]]){
-    const wrap = document.createElement('div');
-    const lb = document.createElement('label'); lb.textContent = label;
-    wrap.appendChild(lb);
+    const lb = document.createElement('label');
+    lb.className = 'field';
     const inp = document.createElement('input');
-    inp.type='number'; inp.min=min; inp.max=max;
+    inp.type='number'; inp.min=min; inp.max=max; inp.inputMode='numeric';
     inp.dataset.epfield = f; inp.value = item[f]!=null? item[f] : (f==='timeout'?5:3);
-    wrap.appendChild(inp);
-    nums.appendChild(wrap);
+    lb.append(label, inp);
+    nums.appendChild(lb);
   }
   div.appendChild(nums);
   return div;
@@ -316,16 +702,82 @@ function addEndpoint(){
   $('eps').appendChild(epEditor({}));
 }
 
+/* ---------- 监视 / 设置 Tab ---------- */
+const TAB_IDS = {monitor:'tab-monitor', settings:'tab-settings'};
+const PANEL_IDS = {monitor:'panel-monitor', settings:'panel-settings'};
+function selectTab(name, focus){
+  const active = name === 'settings' ? 'settings' : 'monitor';
+  for(const key of ['monitor','settings']){
+    const tab = $(TAB_IDS[key]), panel = $(PANEL_IDS[key]);
+    const on = key === active;
+    tab.setAttribute('aria-selected', on ? 'true' : 'false');
+    tab.tabIndex = on ? 0 : -1;
+    panel.hidden = !on;   // 隐藏面板不可聚焦，也不参与 Tab 顺序
+  }
+  if(focus) $(TAB_IDS[active]).focus();
+}
+function initTabs(){
+  const list = document.querySelector('.tabs');
+  if(!list) return;
+  list.addEventListener('keydown', e => {
+    const order = ['monitor','settings'];
+    const cur = document.activeElement && document.activeElement.id === TAB_IDS.settings
+      ? 'settings' : 'monitor';
+    let next = null;
+    if(e.key === 'ArrowRight' || e.key === 'ArrowDown') next = order[(order.indexOf(cur)+1) % order.length];
+    else if(e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = order[(order.indexOf(cur)-1+order.length) % order.length];
+    else if(e.key === 'Home') next = 'monitor';
+    else if(e.key === 'End') next = 'settings';
+    if(next){ e.preventDefault(); selectTab(next, true); }
+  });
+}
+initTabs();
+
+/* 渠道类型 id → 友好显示名。直接沿用“新增渠道”下拉里既有的选项文案作为唯一来源，
+ * 不再维护第二份映射；下拉新增类型时此处自动同步。未知类型一律兜底为“未知渠道”，
+ * 任何可见位置都不回显内部 type id；所有使用处均以 textContent 渲染，不注入 HTML。 */
+const CH_NAMES = {};
+for(const opt of document.querySelectorAll('#ch-add-type option')){
+  CH_NAMES[opt.value] = opt.textContent.trim();
+}
+function chName(type){
+  const t = type == null ? '' : String(type).trim();
+  return CH_NAMES[t] || '未知渠道';
+}
+
 /* 各渠道的编辑字段表：[字段名, 显示名]，log 渠道无字段。 */
 const CH_FIELDS = {
   bark:[['key','Bark Key']], wecom:[['key','Webhook Key']],
-  dingtalk:[['access_token','Access Token']], feishu:[['hook_id','Hook ID']],
+  dingtalk:[['access_token','Access Token']],
+  feishu:[['app_id','App ID'],['app_secret','App Secret'],['chat_id','Chat ID（群会话）']],
   ntfy:[['topic','Topic（可加 server）'],['server','自建服务器（可选）']],
   telegram:[['bot_token','Bot Token'],['chat_id','Chat ID']],
   serverchan:[['send_key','SendKey']], log:[]
 };
+/* 生成一个渠道的字段控件（编辑与新增草稿共用，保证两处同构）。
+ * attr 为写入 dataset 的键（chfield / chdraft）；draft=true 时不提示“沿用已保存值”。 */
+function channelFieldNodes(type, item, attr, draft){
+  const nodes = [];
+  for(const [f, label] of (CH_FIELDS[type] || [])){
+    const lb = document.createElement('label');
+    lb.className = 'field';
+    const inp = document.createElement('input');
+    inp.dataset[attr] = f; inp.value = item[f] || '';
+    inp.placeholder = draft ? ('填写' + label)
+      : (f === 'app_secret' ? '留空沿用已保存值（****）' : '填写' + label);
+    if(f === 'app_secret') inp.autocomplete = 'off';
+    lb.append(label, inp);
+    nodes.push(lb);
+  }
+  if(type === 'log'){
+    const n = document.createElement('div'); n.className = 'note';
+    n.textContent = '仅写日志，不实际发送';
+    nodes.push(n);
+  }
+  return nodes;
+}
 
-/* 渲染一个渠道的编辑卡片：头部类型名+删除按钮，下方按 CH_FIELDS 生成输入框。
+/* 渲染一个渠道的编辑卡片：头部类型名+删除按钮，下方按字段表生成控件。
  * 已保存密钥会以 ****掩码 回显，placeholder 提示留空即沿用。 */
 function chEditor(item){
   const div = document.createElement('div');
@@ -333,33 +785,78 @@ function chEditor(item){
   const type = item.type;
   const head = document.createElement('div');
   head.className='ch-head';
-  head.innerHTML = '<b>'+type+'</b>';
+  const title = document.createElement('b');
+  title.textContent = chName(type);   // 友好名称，textContent 渲染避免注入
   const del = document.createElement('button');
   del.className='ghost btn-sm'; del.textContent='删除';
   del.onclick = ()=> div.remove();
+  head.appendChild(title);
   head.appendChild(del);
   div.appendChild(head);
-  for(const [f, label] of (CH_FIELDS[type]||[])){
-    const lb = document.createElement('label'); lb.textContent = label;
-    div.appendChild(lb);
-    const inp = document.createElement('input');
-    inp.dataset.chfield = f; inp.value = item[f]||''; inp.placeholder='留空沿用已保存值（****）';
-    div.appendChild(inp);
-  }
-  if(type==='log'){
-    const n=document.createElement('div'); n.className='note'; n.textContent='仅写日志，不实际发送';
-    div.appendChild(n);
+  for(const node of channelFieldNodes(type, item, 'chfield', false)){
+    div.appendChild(node);
   }
   div._type = type;
   return div;
 }
 
-/* 下拉选类型 → 新增一个空渠道编辑卡片。 */
-function addChannel(){
-  $('channels').appendChild(chEditor({type: $('ch-add-type').value}));
+/* ---------- 新增渠道：按需展开的草稿面板 ----------
+ * 默认只显示“新增渠道”按钮；点击后才出现类型下拉与对应字段；取消不新增、不保存、
+ * 不残留草稿；确认把当前输入作为新卡片加入编辑列表并收起，最终仍走原 saveConfig。 */
+let _chDraftOpen = false;
+function openChannelDraft(){
+  if(_chDraftOpen) return;
+  _chDraftOpen = true;
+  renderChannelDraftFields();
+  $('ch-draft').hidden = false;
+  const btn = $('btn-add-channel');
+  btn.hidden = true; btn.setAttribute('aria-expanded', 'true');
+  $('ch-add-type').focus();
+}
+function renderChannelDraftFields(){
+  const type = $('ch-add-type').value;
+  const box = $('ch-draft-fields'); box.innerHTML = '';
+  for(const node of channelFieldNodes(type, {}, 'chdraft', true)){
+    box.appendChild(node);
+  }
+}
+function cancelChannelDraft(){
+  _chDraftOpen = false;
+  $('ch-draft-fields').innerHTML = '';
+  $('ch-add-type').value = 'bark';
+  $('ch-draft').hidden = true;
+  const btn = $('btn-add-channel');
+  btn.hidden = false; btn.setAttribute('aria-expanded', 'false');
+  btn.focus();   // 收起包含焦点的区域后，把焦点交回触发按钮
+}
+function confirmChannelDraft(){
+  if(!_chDraftOpen) return;              // 草稿未展开时调用不产生任何卡片
+  const btn = $('btn-ch-add-confirm');
+  if(btn.disabled) return;               // 防双击重复添加
+  btn.disabled = true;
+  try{
+    const type = $('ch-add-type').value.trim();
+    const item = {type};
+    $('ch-draft-fields').querySelectorAll('[data-chdraft]').forEach(inp=>{
+      item[inp.dataset.chdraft] = inp.value.trim();
+    });
+    const card = chEditor(item);
+    $('channels').appendChild(card);
+    cancelChannelDraft();                 // 确认后收起，不残留草稿
+    showMsg('已添加到列表，请保存配置后生效。', true);
+    // 焦点落到新卡片的第一个输入；无输入（如 log）则回到“新增渠道”按钮
+    const first = card.querySelector ? card.querySelector('input') : null;
+    (first || $('btn-add-channel')).focus();
+  } finally { btn.disabled = false; }
 }
 
-/* 读取 /api/config（密钥已打码），填满整个设置表单。 */
+/* 读取 /api/config（密钥已打码），填满整个设置表单。
+ * 重载会覆盖未保存编辑，故先确认，避免误触清空。 */
+function reloadConfig(){
+  if(_saving) return;   // 保存请求进行中禁止重载，避免覆盖当前编辑
+  if(!confirm('放弃未保存的修改并重新加载配置？')) return;
+  loadConfig();
+}
 async function loadConfig(){
   let c;
   try{ c = await api('/api/config'); }
@@ -368,7 +865,7 @@ async function loadConfig(){
   $('c-interval').value = c.interval;
   $('w-port').value = c.webui.port;
   $('w-bind').value = c.webui.bind;
-  $('w-token').value = c.webui.token;
+  $('w-data-dir').value = c.webui.data_dir || 'data';
   const ebox = $('eps'); ebox.innerHTML='';
   for(const item of (c.endpoints||[])) ebox.appendChild(epEditor(item));
   if(!(c.endpoints||[]).length) ebox.appendChild(epEditor({}));
@@ -377,48 +874,132 @@ async function loadConfig(){
 }
 
 /* 收集表单 → POST /api/config。后端会校验、解掩码（****回显=不改）、落盘并热更新；
- * restart_required=true 时提示用户端口/监听地址改动需重启进程。 */
-async function saveConfig(){
-  const channels = [];
-  document.querySelectorAll('#channels .ch-item').forEach(div=>{
-    const item = {type: div._type};
-    div.querySelectorAll('[data-chfield]').forEach(inp=>{
-      item[inp.dataset.chfield] = inp.value.trim();
-    });
-    channels.push(item);
+ * restart_required=true 时提示用户端口/监听地址改动需重启进程。
+ * 共享 _saving 防重入：两个入口并发点击只发一次请求；保存期间禁用并同步两处
+ * 保存/重载按钮；成功后的规范化/掩码回读在解锁后执行，避免被重入守卫跳过。 */
+let _saving = false;
+async function saveConfig(trigger){
+  if(_saving) return;                       // 并发/重复触发直接忽略
+  _saving = true;
+  const saveBtns = Array.from(document.querySelectorAll('.js-save'));
+  if(!saveBtns.length && trigger) saveBtns.push(trigger);   // 仅底部入口存在
+  const reloadBtns = Array.from(document.querySelectorAll('.js-reload'));
+  const lock = (list, label) => list.forEach(b => {
+    b.dataset.label = b.dataset.label || b.textContent;
+    b.disabled = true;
+    if(label) b.textContent = label;
   });
-  const endpoints = [];
-  document.querySelectorAll('#eps .ch-item').forEach(div=>{
-    const item = {};
-    div.querySelectorAll('[data-epfield]').forEach(inp=>{
-      const f = inp.dataset.epfield;
-      item[f] = (f==='timeout'||f==='debounce') ? +inp.value : inp.value.trim();
-    });
-    if(item.base) endpoints.push(item);
+  const unlock = (list) => list.forEach(b => {
+    b.disabled = false; b.textContent = b.dataset.label || b.textContent;
   });
-  if(!endpoints.length){ showMsg('至少需要一个端点（base 不能为空）', false); return; }
-  const body = {
-    interval: +$('c-interval').value,
-    endpoints,
-    channels,
-    webui: {port:+$('w-port').value, bind:$('w-bind').value.trim(), token:$('w-token').value.trim()}
-  };
+  lock(saveBtns, '保存中…');
+  lock(reloadBtns);                         // 保存期间禁止重载，避免覆盖当前编辑
+  let saved = false;
   try{
+    const channels = [];
+    document.querySelectorAll('#channels .ch-item').forEach(div=>{
+      const item = {type: div._type};
+      div.querySelectorAll('[data-chfield]').forEach(inp=>{
+        item[inp.dataset.chfield] = inp.value.trim();
+      });
+      channels.push(item);
+    });
+    const endpoints = [];
+    document.querySelectorAll('#eps .ch-item').forEach(div=>{
+      const item = {};
+      div.querySelectorAll('[data-epfield]').forEach(inp=>{
+        const f = inp.dataset.epfield;
+        item[f] = (f==='timeout'||f==='debounce') ? +inp.value : inp.value.trim();
+      });
+      if(item.base) endpoints.push(item);
+    });
+    if(!endpoints.length){ showMsg('至少需要一个端点（base 不能为空）', false); return; }
+    const body = {
+      interval: +$('c-interval').value,
+      endpoints,
+      channels,
+      webui: {port:+$('w-port').value, bind:$('w-bind').value.trim(), data_dir:$('w-data-dir').value.trim()}
+    };
     const r = await api('/api/config', {method:'POST', body: JSON.stringify(body)});
-    showMsg(r.restart_required ? '已保存。端口/监听地址有变化，重启程序后生效。' : '已保存并即时生效。', true);
-    refresh(); loadConfig();
+    showMsg(r.restart_required ? '已保存。端口/监听地址/认证目录有变化，重启程序后生效。' : '已保存并即时生效。', true);
+    saved = true;
   }catch(e){ showMsg('保存失败：'+e.message, false); }
+  finally{ unlock(saveBtns); unlock(reloadBtns); _saving = false; }
+  // 解锁后再回读，确保成功的规范化/掩码回显不会被重入守卫跳过
+  if(saved){ refresh(); await loadConfig(); }
 }
 
-/* 远程关停：POST /api/shutdown（后端要求已设管理令牌，否则 403）。 */
-async function shutdown(){
-  if(!confirm('确定要关停整个监视程序？')) return;
-  try{ await api('/api/shutdown', {method:'POST'}); showMsg('已发出关停请求。', true); }
-  catch(e){ showMsg('关停失败：'+e.message, false); }
+/* ---------- 远程关闭：本次密码复核对话框 ----------
+ * 点击“关闭程序”弹出可访问对话框（role=dialog + aria-modal），必须输入当前登录密码；
+ * 后端在“会话 + CSRF + 同源”之外再校验该密码。密码只随本次 POST 提交，
+ * 不写入 URL/localStorage/日志；关闭或完成后立即清空输入框。 */
+let _shutdownOpen = false;
+let _shutdownBusy = false;
+function _sdSetError(msg){
+  const el = $('sd-err');
+  el.textContent = msg || '';
+  el.hidden = !msg;
+}
+function openShutdown(){
+  if(_shutdownOpen || _shutdownBusy) return;
+  _shutdownOpen = true;
+  $('sd-pass').value = '';
+  _sdSetError('');
+  $('shutdown-modal').hidden = false;
+  $('sd-pass').focus();
+}
+function closeShutdown(){
+  _shutdownOpen = false;
+  $('shutdown-modal').hidden = true;
+  $('sd-pass').value = '';      // 关闭即清空，避免口令残留在输入框
+  _sdSetError('');
+}
+function cancelShutdown(){
+  if(_shutdownBusy) return;     // 请求进行中不允许取消（避免状态不明）
+  closeShutdown();
+  $('btn-shutdown').focus();    // 焦点交回触发按钮
+}
+function _sdTrapFocus(e){
+  const panel = $('shutdown-modal').querySelector('.modal-panel');
+  if(!panel) return;
+  const items = Array.prototype.filter.call(
+    panel.querySelectorAll('button, input'), el => !el.disabled);
+  if(!items.length) return;
+  const first = items[0], last = items[items.length - 1];
+  if(e.shiftKey && document.activeElement === first){ e.preventDefault(); last.focus(); }
+  else if(!e.shiftKey && document.activeElement === last){ e.preventDefault(); first.focus(); }
+}
+document.addEventListener('keydown', e => {
+  if(!_shutdownOpen) return;
+  if(e.key === 'Escape'){ e.preventDefault(); cancelShutdown(); }
+  else if(e.key === 'Tab'){ _sdTrapFocus(e); }
+});
+async function confirmShutdown(){
+  if(!_shutdownOpen || _shutdownBusy) return;   // 防重复提交
+  const pass = $('sd-pass').value;
+  if(!pass){ _sdSetError('请输入当前登录密码。'); $('sd-pass').focus(); return; }
+  _shutdownBusy = true;
+  const btn = $('sd-confirm'); const label = btn.textContent;
+  btn.disabled = true; btn.textContent = '关闭中…';
+  $('sd-cancel').disabled = true;
+  try{
+    await api('/api/shutdown', {method:'POST', body: JSON.stringify({password: pass})});
+    $('sd-pass').value = '';    // 成功即清空
+    closeShutdown();
+    showMsg('已发出关闭请求。', true);
+  }catch(e){
+    $('sd-pass').value = '';    // 失败也清空，不残留口令
+    _sdSetError(e.message || '关闭失败。');
+    $('sd-pass').focus();
+  }finally{
+    _shutdownBusy = false;
+    btn.disabled = false; btn.textContent = label;
+    $('sd-cancel').disabled = false;
+  }
 }
 
-refresh(); loadConfig();
-timer = setInterval(refresh, 5000);
+initTheme();
+boot();
 </script>
 </body>
 </html>

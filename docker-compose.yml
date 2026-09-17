@@ -5,9 +5,10 @@ services:
     container_name: botbrother
     restart: unless-stopped
     volumes:
-      # 把 config.json 放在本目录（勿提交真实配置，含密钥）
-      - ./config.json:/app/config.json:ro
-    # 也可不用挂载，用环境变量覆盖（QQMON_PROBE_BASE 等）
+      # 可写数据目录：存放 config.json（WebUI 保存配置需原子写）与登录密码认证数据。
+      # 请把 config.json 放在宿主机 ./data/ 下（初次可 cp config.example.json data/config.json）。
+      # 目录整体挂载才能支持 os.replace 原子替换；单文件 :ro 挂载会令保存失败。
+      - ./data:/app/data
     environment:
       - QQMON_INTERVAL=30
       - QQMON_DEBOUNCE=3

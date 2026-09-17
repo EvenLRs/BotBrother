@@ -23,9 +23,9 @@ import urllib.parse
 import urllib.request
 
 # ---- 三种状态常量（供其他模块 import，避免魔法字符串散落各处）----
-ONLINE = 'online'
-OFFLINE = 'offline'
-UNREACHABLE = 'unreachable'
+ONLINE = "online"
+OFFLINE = "offline"
+UNREACHABLE = "unreachable"
 
 # 风格缓存：base → 'path' / 'envelope'。按端点地址分别记忆——
 # 多端点监视时（比如同机 NapCat + 异机 SnowLuma），两家的调用风格不同，
@@ -35,17 +35,17 @@ _style_cache = {}
 
 def _url(base, style):
     """按风格拼请求 URL：path 式打 /get_status，envelope 式打根路径。"""
-    base = base.rstrip('/')
-    if style == 'path':
-        return base + '/get_status'
-    return base + '/'
+    base = base.rstrip("/")
+    if style == "path":
+        return base + "/get_status"
+    return base + "/"
 
 
 def _body(style):
     """按风格拼请求体：path 式空 JSON，envelope 式带 action 信封。"""
-    if style == 'path':
-        return json.dumps({}).encode('utf-8')
-    return json.dumps({'action': 'get_status', 'params': {}}).encode('utf-8')
+    if style == "path":
+        return json.dumps({}).encode("utf-8")
+    return json.dumps({"action": "get_status", "params": {}}).encode("utf-8")
 
 
 def _request(base, token, timeout, style):
@@ -61,27 +61,31 @@ def _request(base, token, timeout, style):
         parts = urllib.parse.urlsplit(url)
         query = parts.query
         if query:
-            query += '&access_token=' + urllib.parse.quote(token, safe='')
+            query += "&access_token=" + urllib.parse.quote(token, safe="")
         else:
-            query = 'access_token=' + urllib.parse.quote(token, safe='')
+            query = "access_token=" + urllib.parse.quote(token, safe="")
         url = urllib.parse.urlunsplit(
-            (parts.scheme, parts.netloc, parts.path, query, parts.fragment))
+            (parts.scheme, parts.netloc, parts.path, query, parts.fragment)
+        )
     req = urllib.request.Request(
-        url, data=_body(style), method='POST',
-        headers={'Content-Type': 'application/json'})
-    result_self_id = ['']
+        url,
+        data=_body(style),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    result_self_id = [""]
     if token:
-        req.add_header('Authorization', 'Bearer ' + token)
+        req.add_header("Authorization", "Bearer " + token)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode('utf-8', 'replace')
+            raw = resp.read().decode("utf-8", "replace")
             status = resp.status
     except urllib.error.HTTPError as e:
         # HTTP 错误码不是连接失败：读出应答体交给上层按状态码分类
         try:
-            raw = e.read().decode('utf-8', 'replace')
+            raw = e.read().decode("utf-8", "replace")
         except Exception:
-            raw = ''
+            raw = ""
         status = e.code
     except Exception as e:
         raise _Unreachable(str(e))
@@ -92,9 +96,9 @@ def _request(base, token, timeout, style):
     # get_status 应答的 data.user_id 即机器人自身 QQ 号（self_id），
     # 供告警文案使用；取不到就留空，文案退化为不带 self_id。
     if isinstance(parsed, dict):
-        data = parsed.get('data')
-        if isinstance(data, dict) and data.get('user_id'):
-            result_self_id[0] = str(data['user_id'])
+        data = parsed.get("data")
+        if isinstance(data, dict) and data.get("user_id"):
+            result_self_id[0] = str(data["user_id"])
     return status, parsed, result_self_id[0]
 
 
@@ -112,13 +116,13 @@ def _interpret(parsed):
     """
     if not isinstance(parsed, dict):
         return None
-    data = parsed.get('data')
-    if not isinstance(data, dict) or 'online' not in data:
+    data = parsed.get("data")
+    if not isinstance(data, dict) or "online" not in data:
         return None
-    if parsed.get('status') == 'ok' and parsed.get('retcode') == 0:
-        return ONLINE if data.get('online') else OFFLINE
-    if isinstance(data.get('online'), bool):
-        return ONLINE if data['online'] else OFFLINE
+    if parsed.get("status") == "ok" and parsed.get("retcode") == 0:
+        return ONLINE if data.get("online") else OFFLINE
+    if isinstance(data.get("online"), bool):
+        return ONLINE if data["online"] else OFFLINE
     return None
 
 
@@ -137,39 +141,38 @@ def probe(base, token=None, timeout=5):
     """
     global _style_cache
     cached = _style_cache.get(base)
-    styles = [cached] if cached else ['path', 'envelope']
-    last_detail = ''
+    styles = [cached] if cached else ["path", "envelope"]
+    last_detail = ""
     for style in styles:
         try:
             status, parsed, result_self_id = _request(base, token, timeout, style)
         except _Unreachable as e:
-            last_detail = '连接失败: %s' % e
+            last_detail = "连接失败: %s" % e
             # 拒连对两种风格无区别；但 path 拒连时先补验 envelope，
             # 避免把“路径不存在”误判成拒连（SnowLuma 只应答根路径）
-            if style == 'path' and cached is None:
+            if style == "path" and cached is None:
                 try:
-                    _request(base, token, timeout, 'envelope')
+                    _request(base, token, timeout, "envelope")
                 except _Unreachable:
-                    return UNREACHABLE, last_detail, ''
+                    return UNREACHABLE, last_detail, ""
                 continue
             if cached:
-                return UNREACHABLE, last_detail, ''
+                return UNREACHABLE, last_detail, ""
             continue
         if status == 404:
-            last_detail = 'HTTP 404（路径不存在）'
+            last_detail = "HTTP 404（路径不存在）"
             continue
         if status >= 400:
-            last_detail = 'HTTP %d' % status
+            last_detail = "HTTP %d" % status
             if status == 403:
-                return UNREACHABLE, 'HTTP 403（token 鉴权失败或未授权）', ''
+                return UNREACHABLE, "HTTP 403（token 鉴权失败或未授权）", ""
             continue
         state = _interpret(parsed)
         if state is not None:
             _style_cache[base] = style
-            # 风格信息只进内部缓存，不进对外 detail（UI/报警不出现“path 风格”字样）
-            detail = 'API 应答 online=%s' % (
-                'true' if state == ONLINE else 'false')
-            return state, detail, result_self_id
-        last_detail = '应答不是合法 OneBot JSON'
+            # 正常解析成功：不生成在线/离线说明（状态由 state 字段与状态徽标表达）。
+            # 故障/错误详情（超时、403、404、非法 JSON 等）仍由其它分支保留。
+            return state, "", result_self_id
+        last_detail = "应答不是合法 OneBot JSON"
         continue
-    return UNREACHABLE, last_detail or '无法识别端点', ''
+    return UNREACHABLE, last_detail or "无法识别端点", ""

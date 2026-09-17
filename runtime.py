@@ -36,31 +36,31 @@ import channels as channels_mod
 import probe
 import statemachine
 
-MAX_HISTORY = 720        # 历史环形缓冲容量：30s 一轮 ≈ 6 小时
+MAX_HISTORY = 720  # 历史环形缓冲容量：30s 一轮 ≈ 6 小时
 MAX_NOTIFICATIONS = 100  # 通知记录容量（WebUI 只显示前 20 条）
 
 # 各渠道的密钥字段：API 输出时打码；提交回掩码值视为「不修改」。
 # 新增渠道若含密钥，必须在这里登记，否则会明文外泄到浏览器。
 SECRET_FIELDS = {
-    'bark': ('key',),
-    'wecom': ('key',),
-    'dingtalk': ('access_token',),
-    'feishu': ('hook_id',),
-    'ntfy': ('topic',),
-    'telegram': ('bot_token', 'chat_id'),
-    'serverchan': ('send_key',),
+    "bark": ("key",),
+    "wecom": ("key",),
+    "dingtalk": ("access_token",),
+    "feishu": ("app_secret", "hook_id"),  # hook_id 仅为旧 webhook 迁移期掩码
+    "ntfy": ("topic",),
+    "telegram": ("bot_token", "chat_id"),
+    "serverchan": ("send_key",),
 }
 
 # 每渠道必填字段（log 无）。WebUI 提交配置时的完整性校验依据。
 REQUIRED_FIELDS = {
-    'bark': ('key',),
-    'wecom': ('key',),
-    'dingtalk': ('access_token',),
-    'feishu': ('hook_id',),
-    'ntfy': ('topic',),
-    'telegram': ('bot_token', 'chat_id'),
-    'serverchan': ('send_key',),
-    'log': (),
+    "bark": ("key",),
+    "wecom": ("key",),
+    "dingtalk": ("access_token",),
+    "feishu": ("app_id", "app_secret", "chat_id"),
+    "ntfy": ("topic",),
+    "telegram": ("bot_token", "chat_id"),
+    "serverchan": ("send_key",),
+    "log": (),
 }
 
 
@@ -70,12 +70,12 @@ def mask_secret(value):
     保留末 4 位是为了让用户能在页面上辨认“这是不是我刚才存的那个 key”。
     """
     if not value:
-        return value if value == '' else '****'
+        return value if value == "" else "****"
     if not isinstance(value, str):
-        return '****'
+        return "****"
     if len(value) <= 8:
-        return '****'
-    return '****' + value[-4:]
+        return "****"
+    return "****" + value[-4:]
 
 
 def _unmask(incoming, current):
@@ -97,84 +97,133 @@ def _validate_config(incoming):
     通过则返回规范化后的 dict（结构与磁盘 config.json 一致）。
     """
     if not isinstance(incoming, dict):
-        raise ValueError('请求体必须是 JSON 对象')
+        raise ValueError("请求体必须是 JSON 对象")
 
     def _int(name, value, lo, hi):
         # bool 是 int 子类，先排除；再卡范围
-        if isinstance(value, bool) or not isinstance(value, int) \
-                or not lo <= value <= hi:
-            raise ValueError('%s 必须是 %d-%d 之间的整数' % (name, lo, hi))
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not lo <= value <= hi
+        ):
+            raise ValueError("%s 必须是 %d-%d 之间的整数" % (name, lo, hi))
         return value
 
     out = {}
-    out['interval'] = _int('interval（轮询间隔）', incoming.get('interval'), 5, 86400)
+    out["interval"] = _int("interval（轮询间隔）", incoming.get("interval"), 5, 86400)
 
     # 多端点：endpoints 数组，每项 base 必填、token/timeout/debounce/label 可选
-    eps = incoming.get('endpoints')
+    eps = incoming.get("endpoints")
     if not isinstance(eps, list) or not eps:
-        raise ValueError('endpoints 必须是非空数组（至少一个被监视端点）')
+        raise ValueError("endpoints 必须是非空数组（至少一个被监视端点）")
     out_eps = []
     for i, item in enumerate(eps):
         if not isinstance(item, dict):
-            raise ValueError('endpoints[%d] 必须是对象' % i)
-        base = item.get('base')
-        if not isinstance(base, str) or not (base.startswith('http://')
-                                             or base.startswith('https://')):
-            raise ValueError('endpoints[%d].base 必须是 http:// 或 https:// 开头的地址' % i)
-        token = item.get('token', '')
+            raise ValueError("endpoints[%d] 必须是对象" % i)
+        base = item.get("base")
+        if not isinstance(base, str) or not (
+            base.startswith("http://") or base.startswith("https://")
+        ):
+            raise ValueError(
+                "endpoints[%d].base 必须是 http:// 或 https:// 开头的地址" % i
+            )
+        token = item.get("token", "")
         if token is None:
-            token = ''
+            token = ""
         if not isinstance(token, str):
-            raise ValueError('endpoints[%d].token 必须是字符串' % i)
-        label = item.get('label') or base
+            raise ValueError("endpoints[%d].token 必须是字符串" % i)
+        label = item.get("label") or base
         if not isinstance(label, str) or not label.strip():
-            raise ValueError('endpoints[%d].label 必须是非空字符串' % i)
-        out_eps.append({
-            'label': label,
-            'base': base,
-            'token': token,
-            'timeout': _int('endpoints[%d].timeout（超时）' % i,
-                            item.get('timeout', 5), 1, 60),
-            'debounce': _int('endpoints[%d].debounce（去抖）' % i,
-                             item.get('debounce', 3), 1, 10),
-        })
+            raise ValueError("endpoints[%d].label 必须是非空字符串" % i)
+        out_eps.append(
+            {
+                "label": label,
+                "base": base,
+                "token": token,
+                "timeout": _int(
+                    "endpoints[%d].timeout（超时）" % i, item.get("timeout", 5), 1, 60
+                ),
+                "debounce": _int(
+                    "endpoints[%d].debounce（去抖）" % i, item.get("debounce", 3), 1, 10
+                ),
+            }
+        )
     # 去重检查：同 base 同 token 只允许一次
-    keys = [(e['base'], e['token']) for e in out_eps]
+    keys = [(e["base"], e["token"]) for e in out_eps]
     if len(keys) != len(set(keys)):
-        raise ValueError('endpoints 存在重复项（同地址同令牌只能配一次）')
-    out['endpoints'] = out_eps
+        raise ValueError("endpoints 存在重复项（同地址同令牌只能配一次）")
+    out["endpoints"] = out_eps
 
-    chs = incoming.get('channels')
+    chs = incoming.get("channels")
     if not isinstance(chs, list):
-        raise ValueError('channels 必须是数组')
+        raise ValueError("channels 必须是数组")
+    out_chs = []
     for i, item in enumerate(chs):
-        if not isinstance(item, dict) or 'type' not in item:
-            raise ValueError('channels[%d] 缺少 type' % i)
-        t = item['type']
+        if not isinstance(item, dict) or "type" not in item:
+            raise ValueError("channels[%d] 缺少 type" % i)
+        t = item["type"]
         if t not in channels_mod.CHANNEL_TYPES:
-            raise ValueError('channels[%d] 未知渠道类型 %r' % (i, t))
+            raise ValueError("channels[%d] 未知渠道类型 %r" % (i, t))
+        if t == "feishu":
+            item = dict(item)
+            has_app = bool(
+                str(item.get("app_id", "")).strip()
+                or str(item.get("app_secret", "")).strip()
+            )
+            if item.get("hook_id") and not has_app:
+                raise ValueError(
+                    "channels[%d] 飞书 Webhook 渠道已废弃：请改为“飞书应用机器人”，"
+                    "填写 app_id、app_secret 与群会话 chat_id 后再保存"
+                    "（不会把 hook_id 当作应用字段）。" % i
+                )
+            chat_id = str(item.get("chat_id", "")).strip()
+            legacy_receive = str(item.get("receive_id", "")).strip()
+            legacy_type = str(
+                item.get("receive_id_type", "chat_id") or "chat_id"
+            ).strip()
+            if not chat_id and legacy_receive:
+                if legacy_type == "chat_id":
+                    chat_id = legacy_receive  # 旧 chat_id 配置无损归一
+                else:
+                    raise ValueError(
+                        "channels[%d] 飞书旧配置的接收者类型为 %s，本工具仅支持 chat_id："
+                        "请重新填写群会话 chat_id 后再保存"
+                        "（不会把用户 ID 当作 chat_id 投递）。" % (i, legacy_type)
+                    )
+            # 保存统一为新格式三字段：不再残留 receive_id/receive_id_type/hook_id
+            item = {
+                "type": "feishu",
+                "app_id": str(item.get("app_id", "")),
+                "app_secret": str(item.get("app_secret", "")),
+                "chat_id": chat_id,
+            }
         for f in REQUIRED_FIELDS[t]:
             v = item.get(f)
             if not isinstance(v, str) or not v.strip():
-                raise ValueError('channels[%d]（%s）缺少必填字段 %s' % (i, t, f))
-    out['channels'] = chs
+                raise ValueError("channels[%d]（%s）缺少必填字段 %s" % (i, t, f))
+        out_chs.append(item)
+    out["channels"] = out_chs
 
-    w = incoming.get('webui') or {}
+    w = incoming.get("webui") or {}
     if not isinstance(w, dict):
-        raise ValueError('webui 必须是对象')
+        raise ValueError("webui 必须是对象")
     # port=0 是「系统分配」哨兵（测试/临时场景），放行；真实端口才卡 1-65535
-    port = w.get('port', 8080)
+    port = w.get("port", 8080)
     if port != 0:
-        port = _int('webui.port（端口）', port, 1, 65535)
-    out['webui'] = {
-        'port': port,
-        'bind': (w.get('bind') or '127.0.0.1'),
-        'token': (w.get('token') or ''),
+        port = _int("webui.port（端口）", port, 1, 65535)
+    # 注意：旧配置里的 webui.token 兼容读取但被忽略（不再作为登录通道）。
+    out["webui"] = {
+        "port": port,
+        "bind": (w.get("bind") or "127.0.0.1"),
+        "data_dir": (w.get("data_dir") or "data"),
     }
-    if not isinstance(out['webui']['bind'], str) or not out['webui']['bind'].strip():
-        raise ValueError('webui.bind 必须是非空字符串')
-    if not isinstance(out['webui']['token'], str):
-        raise ValueError('webui.token 必须是字符串')
+    if not isinstance(out["webui"]["bind"], str) or not out["webui"]["bind"].strip():
+        raise ValueError("webui.bind 必须是非空字符串")
+    if (
+        not isinstance(out["webui"]["data_dir"], str)
+        or not out["webui"]["data_dir"].strip()
+    ):
+        raise ValueError("webui.data_dir 必须是非空字符串")
     return out
 
 
@@ -186,10 +235,10 @@ class _EndpointState:
     """
 
     def __init__(self, label, debounce):
-        self.label = label            # 展示名（报警文案、WebUI）
+        self.label = label  # 展示名（报警文案、WebUI）
         self.sm = statemachine.MonitorStateMachine(debounce=debounce)
-        self.state = None            # online/offline/unreachable，None=尚未探测
-        self.state_detail = ''
+        self.state = None  # online/offline/unreachable，None=尚未探测
+        self.state_detail = ""
         self.state_since = None
         self.last_probe_at = None
         self.probe_count = 0
@@ -204,36 +253,40 @@ def normalize_endpoints(cfg):
       2. 旧单端点写法：probe{base,token,timeout} + 顶层 debounce
     返回统一列表，每项含全部字段（缺省值已填）；label 缺省用 base 本身。
     """
-    if cfg.get('endpoints'):
+    if cfg.get("endpoints"):
         eps = []
-        for i, item in enumerate(cfg['endpoints']):
-            if not isinstance(item, dict) or not item.get('base'):
-                raise ValueError('endpoints[%d] 缺少 base' % i)
-            eps.append({
-                'label': item.get('label') or item['base'],
-                'base': item['base'],
-                'token': item.get('token', ''),
-                'timeout': item.get('timeout', 5),
-                'debounce': item.get('debounce', cfg.get('debounce', 3)),
-            })
+        for i, item in enumerate(cfg["endpoints"]):
+            if not isinstance(item, dict) or not item.get("base"):
+                raise ValueError("endpoints[%d] 缺少 base" % i)
+            eps.append(
+                {
+                    "label": item.get("label") or item["base"],
+                    "base": item["base"],
+                    "token": item.get("token", ""),
+                    "timeout": item.get("timeout", 5),
+                    "debounce": item.get("debounce", cfg.get("debounce", 3)),
+                }
+            )
         # 去重：同 base 同 token 只保留第一个
         seen, deduped = set(), []
         for e in eps:
-            key = (e['base'], e['token'])
+            key = (e["base"], e["token"])
             if key not in seen:
                 seen.add(key)
                 deduped.append(e)
         return deduped
     # 旧单端点写法自动转换
-    p = cfg.get('probe') or {}
-    base = cfg.get('base') or p.get('base') or 'http://127.0.0.1:3000'
-    return [{
-        'label': p.get('label') or base,
-        'base': base,
-        'token': cfg.get('token', p.get('token', '')),
-        'timeout': cfg.get('timeout', p.get('timeout', 5)),
-        'debounce': cfg.get('debounce', 3),
-    }]
+    p = cfg.get("probe") or {}
+    base = cfg.get("base") or p.get("base") or "http://127.0.0.1:3000"
+    return [
+        {
+            "label": p.get("label") or base,
+            "base": base,
+            "token": cfg.get("token", p.get("token", "")),
+            "timeout": cfg.get("timeout", p.get("timeout", 5)),
+            "debounce": cfg.get("debounce", 3),
+        }
+    ]
 
 
 class MonitorRuntime:
@@ -251,22 +304,22 @@ class MonitorRuntime:
 
         # 端点归一化：新写法 endpoints[] 直接用；旧写法 probe{} 转 1 元素列表。
         # 归一化结果写回 cfg，让 masked_config/validate/update 走同一条路。
-        cfg['endpoints'] = normalize_endpoints(cfg)
-        cfg.setdefault('interval', 30)
-        cfg.setdefault('channels', [{'type': 'log'}])
+        cfg["endpoints"] = normalize_endpoints(cfg)
+        cfg.setdefault("interval", 30)
+        cfg.setdefault("channels", [{"type": "log"}])
 
-        # webui 配置补默认值（缺省只听本机、不鉴权——安全默认）
-        w = dict(cfg.get('webui') or {})
-        w.setdefault('port', 8080)
-        w.setdefault('bind', '127.0.0.1')
-        w.setdefault('token', '')
-        cfg['webui'] = w
-        self.auth_token = w['token']
+        # webui 配置补默认值（缺省只听本机；登录由 WebUI 密码认证负责）
+        w = dict(cfg.get("webui") or {})
+        w.setdefault("port", 8080)
+        w.setdefault("bind", "127.0.0.1")
+        w.setdefault("data_dir", "data")
+        w.pop("token", None)  # 旧 token 字段兼容读取后丢弃，不作为登录通道
+        cfg["webui"] = w
 
-        self.channels = channels_mod.build_channels(cfg['channels'], log=self.log)
+        self.channels = channels_mod.build_channels(cfg["channels"], log=self.log)
 
         # 每端点独立运行状态
-        self.endpoints = []           # [ _EndpointState ]，与 cfg['endpoints'] 同序
+        self.endpoints = []  # [ _EndpointState ]，与 cfg['endpoints'] 同序
         self._sync_endpoint_states()
         self.started_at = time.time()
         # 聚合通知记录（所有端点共用，渠道是全局的）
@@ -281,20 +334,20 @@ class MonitorRuntime:
         with self.lock:
             old = {}
             for e in self.endpoints:
-                old[(getattr(e, 'base', None), getattr(e, '_token', None))] = e
+                old[(getattr(e, "base", None), getattr(e, "_token", None))] = e
             new_list = []
-            for item in self.cfg['endpoints']:
-                key = (item['base'], item['token'])
+            for item in self.cfg["endpoints"]:
+                key = (item["base"], item["token"])
                 e = old.get(key)
                 if e is None:
-                    e = _EndpointState(item['label'], item['debounce'])
-                    e.base = item['base']
-                    e._token = item['token']
-                    e.timeout = item['timeout']
+                    e = _EndpointState(item["label"], item["debounce"])
+                    e.base = item["base"]
+                    e._token = item["token"]
+                    e.timeout = item["timeout"]
                 else:
-                    e.label = item['label']
-                    e.sm.debounce = item['debounce']
-                    e.timeout = item['timeout']
+                    e.label = item["label"]
+                    e.sm.debounce = item["debounce"]
+                    e.timeout = item["timeout"]
                 new_list.append(e)
             self.endpoints = new_list
 
@@ -310,12 +363,12 @@ class MonitorRuntime:
         """
         worst = probe.ONLINE
         rank = {probe.ONLINE: 0, probe.OFFLINE: 1, probe.UNREACHABLE: 2}
-        for ep in list(self.endpoints):        # 快照一份，热更新不冲击本轮
+        for ep in list(self.endpoints):  # 快照一份，热更新不冲击本轮
             with self.lock:
-                base, token, timeout = ep.base, ep._token, getattr(ep, 'timeout', 5)
+                base, token, timeout = ep.base, ep._token, getattr(ep, "timeout", 5)
                 label = ep.label
             state, detail, self_id = probe.probe(base, token or None, timeout)
-            self.log('探测结果（%s）：%s（%s）' % (label, state, detail))
+            self.log("探测结果（%s）：%s（%s）" % (label, state, detail))
             now = time.time()
             with self.lock:
                 if state != ep.state:
@@ -327,7 +380,7 @@ class MonitorRuntime:
                 ep.history.append((now, state))
             # 端点自己的状态机，报警文案带上机器人 QQ 号（探测应答里的 user_id）
             for msg in ep.sm.feed(state, detail, self_id):
-                self._notify(msg, '')
+                self._notify(msg, "")
             if rank.get(state, 0) > rank.get(worst, 0):
                 worst = state
         return worst
@@ -342,9 +395,9 @@ class MonitorRuntime:
             try:
                 self.poll_once()
             except Exception as e:
-                self.log('轮询异常（继续运行）：%s' % e)
+                self.log("轮询异常（继续运行）：%s" % e)
             with self.lock:
-                interval = self.cfg['interval']
+                interval = self.cfg["interval"]
             time.sleep(interval)
 
     # ==================== 通知 ====================
@@ -359,11 +412,13 @@ class MonitorRuntime:
         for ch in self.channels:
             try:
                 ch.send(title, body)
-                self.log('通知已发往渠道 %s：%s' % (ch.name, title))
-                results.append({'channel': ch.name, 'ok': True})
+                self.log("通知已发往渠道 %s：%s" % (ch.name, title))
+                results.append({"channel": ch.name, "ok": True})
             except channels_mod.ChannelError as e:
-                self.log('渠道 %s 发送失败（已跳过，不影响其他渠道）：%s' % (ch.name, e))
-                results.append({'channel': ch.name, 'ok': False, 'error': str(e)})
+                self.log(
+                    "渠道 %s 发送失败（已跳过，不影响其他渠道）：%s" % (ch.name, e)
+                )
+                results.append({"channel": ch.name, "ok": False, "error": str(e)})
         return results
 
     def _notify(self, title, body):
@@ -371,16 +426,19 @@ class MonitorRuntime:
         results = self.send_all(title, body)
         with self.lock:
             self.notifications.appendleft(
-                {'ts': time.time(), 'title': title, 'body': body, 'results': results})
+                {"ts": time.time(), "title": title, "body": body, "results": results}
+            )
         return results
 
     def send_test_alert(self):
         """发一条测试通知到所有渠道（结果同步进通知记录，页面上立刻可见）。"""
         with self.lock:
             eps = [e.label for e in self.endpoints]
-        target = '、'.join(eps) if eps else '（未配置端点）'
-        return self._notify('QQ 监视测试通知',
-                            '如果你收到这条，说明监视 %s 的消息渠道配置是通的。' % target)
+        target = "、".join(eps) if eps else "（未配置端点）"
+        return self._notify(
+            "QQ 监视测试通知",
+            "如果你收到这条，说明监视 %s 的消息渠道配置是通的。" % target,
+        )
 
     # ==================== 配置热更新 ====================
 
@@ -393,65 +451,87 @@ class MonitorRuntime:
         validated = _validate_config(incoming)
         with self.lock:
             cur = self.cfg
-            cur_channels = cur['channels']
+            cur_channels = cur["channels"]
 
         # 端点 token 掩码还原：逐端点对位（同 base 同 token 视为未变）
-        cur_eps = {(e['base'], e.get('token', '')): e for e in cur.get('endpoints', [])}
+        cur_eps = {(e["base"], e.get("token", "")): e for e in cur.get("endpoints", [])}
         new_endpoints = []
-        for item in validated['endpoints']:
+        for item in validated["endpoints"]:
             item = dict(item)
-            old_ep = cur_eps.get((item['base'], item.get('token', '')))
-            if item.get('token') and old_ep is None:
+            old_ep = cur_eps.get((item["base"], item.get("token", "")))
+            if item.get("token") and old_ep is None:
                 # 新地址或改了 token：掩码可能对不上旧端点，尝试按 base 对位
-                by_base = {e['base']: e for e in cur.get('endpoints', [])}
-                old_ep = by_base.get(item['base'])
-            if item.get('token'):
-                old_token = old_ep.get('token', '') if old_ep else ''
-                item['token'] = _unmask(item['token'], old_token)
+                by_base = {e["base"]: e for e in cur.get("endpoints", [])}
+                old_ep = by_base.get(item["base"])
+            if item.get("token"):
+                old_token = old_ep.get("token", "") if old_ep else ""
+                item["token"] = _unmask(item["token"], old_token)
             new_endpoints.append(item)
 
         # 渠道密钥逐项还原。对位规则：同类型渠道按出现序号一一对应
         # （配置里两个 bark，第 1 个对旧的第 1 个）——够用且无需额外 ID。
         cur_by_type = {}
         for it in cur_channels:
-            cur_by_type.setdefault(it.get('type'), []).append(it)
+            cur_by_type.setdefault(it.get("type"), []).append(it)
         seen = {}
         new_channels = []
-        for item in validated['channels']:
+        for item in validated["channels"]:
             item = dict(item)
-            t = item.get('type')
+            t = item.get("type")
             idx = seen.get(t, 0)
             seen[t] = idx + 1
             lst = cur_by_type.get(t, [])
             cur_item = lst[idx] if idx < len(lst) else None
             for f in SECRET_FIELDS.get(t, ()):
                 if f in item and cur_item is not None:
-                    item[f] = _unmask(item[f], cur_item.get(f, ''))
+                    item[f] = _unmask(item[f], cur_item.get(f, ""))
             new_channels.append(item)
 
-        w = validated['webui']
-        wtoken = _unmask(w['token'], cur['webui'].get('token', ''))
+        w = validated["webui"]
         # 端口 0 是测试用的“系统分配”哨兵，不参与变化比较；
-        # 真实的 bind/port 变化才要求重启（socket 已被监听，改不了）
-        cur_port = cur['webui'].get('port', 8080)
-        restart_required = (w['port'] != cur_port and cur_port != 0) \
-            or (w['bind'] != cur['webui'].get('bind'))
+        # 真实的 bind/port 变化才要求重启（socket 已被监听，改不了）；
+        # data_dir 变化同样需重启以重新加载认证数据。
+        cur_port = cur["webui"].get("port", 8080)
+        restart_required = (
+            (w["port"] != cur_port and cur_port != 0)
+            or (w["bind"] != cur["webui"].get("bind"))
+            or (w["data_dir"] != cur["webui"].get("data_dir", "data"))
+        )
+
+        # 先落盘再改内存：写盘失败时运行内存保持不变（避免内存/磁盘不一致）。
+        next_cfg = {
+            "interval": validated["interval"],
+            "endpoints": new_endpoints,
+            "channels": new_channels,
+            "webui": {
+                "port": w["port"],
+                "bind": w["bind"],
+                "data_dir": w["data_dir"],
+            },
+        }
+        try:
+            self._persist(next_cfg)
+        except OSError as e:
+            raise ValueError(
+                "配置保存失败（配置目录不可写？请把 config.json 放到可写目录，"
+                "Docker 下建议挂载可写 data 目录并把 --config 指过去）：%s" % e
+            )
 
         # 应用：一次持锁写完全部字段；渠道列表整体重建（不可变换新，
         # 避免半新半旧的中间态）；端点状态按 base+token 对位保留历史。
         with self.lock:
-            cur['interval'] = validated['interval']
-            cur['endpoints'] = new_endpoints
-            cur['channels'] = new_channels
-            cur['webui'] = {'port': w['port'], 'bind': w['bind'], 'token': wtoken}
+            cur["interval"] = next_cfg["interval"]
+            cur["endpoints"] = next_cfg["endpoints"]
+            cur["channels"] = next_cfg["channels"]
+            cur["webui"] = next_cfg["webui"]
             self._sync_endpoint_states()
             self.channels = channels_mod.build_channels(new_channels, log=self.log)
-            self.auth_token = wtoken
 
-        self._persist(cur)
-        self.log('配置已通过 WebUI 更新（interval=%s，端点 %d 个，渠道 %d 个）'
-                 % (validated['interval'], len(new_endpoints), len(new_channels)))
-        return {'restart_required': restart_required}
+        self.log(
+            "配置已通过 WebUI 更新（interval=%s，端点 %d 个，渠道 %d 个）"
+            % (validated["interval"], len(new_endpoints), len(new_channels))
+        )
+        return {"restart_required": restart_required}
 
     def _persist(self, cfg):
         """把运行时配置写回磁盘：先写 .tmp，再原子替换；旧文件备份 .bak。
@@ -462,21 +542,21 @@ class MonitorRuntime:
             return
         # 落盘统一用 endpoints 新结构（旧 probe 写法已被 __init__ 归一化）
         data = {
-            'interval': cfg['interval'],
-            'endpoints': cfg['endpoints'],
-            'channels': cfg['channels'],
-            'webui': cfg['webui'],
+            "interval": cfg["interval"],
+            "endpoints": cfg["endpoints"],
+            "channels": cfg["channels"],
+            "webui": cfg["webui"],
         }
         old = None
         if os.path.exists(self.config_path):
-            with open(self.config_path, 'r', encoding='utf-8') as f:
+            with open(self.config_path, "r", encoding="utf-8") as f:
                 old = f.read()
-        tmp = self.config_path + '.tmp'
-        with open(tmp, 'w', encoding='utf-8') as f:
+        tmp = self.config_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-            f.write('\n')
+            f.write("\n")
         if old is not None:
-            with open(self.config_path + '.bak', 'w', encoding='utf-8') as f:
+            with open(self.config_path + ".bak", "w", encoding="utf-8") as f:
                 f.write(old)
         os.replace(tmp, self.config_path)
 
@@ -495,30 +575,34 @@ class MonitorRuntime:
             for ep in self.endpoints:
                 if worst is None or rank.get(ep.state, 0) > rank.get(worst, 0):
                     worst, worst_ep = ep.state, ep
-                eps_out.append({
-                    'label': ep.label,
-                    'base': ep.base,
-                    'state': ep.state,
-                    'state_detail': ep.state_detail,
-                    'state_since': ep.state_since,
-                    'last_probe_at': ep.last_probe_at,
-                    'probe_count': ep.probe_count,
-                    'history': list(ep.history)[-120:],
-                })
+                eps_out.append(
+                    {
+                        "label": ep.label,
+                        "base": ep.base,
+                        "state": ep.state,
+                        "state_detail": ep.state_detail,
+                        "state_since": ep.state_since,
+                        "last_probe_at": ep.last_probe_at,
+                        "probe_count": ep.probe_count,
+                        "history": list(ep.history)[-120:],
+                    }
+                )
             return {
-                'state': worst_ep.state if worst_ep else None,
-                'state_detail': (worst_ep.state_detail if worst_ep else ''),
-                'state_since': (worst_ep.state_since if worst_ep else None),
-                'last_probe_at': (worst_ep.last_probe_at if worst_ep else None),
-                'uptime': time.time() - self.started_at,
-                'interval': self.cfg['interval'],
-                'base': '、'.join(e['label'] for e in self.cfg['endpoints']),
-                'endpoints': eps_out,
-                'channels_active': [c.name for c in self.channels],
-                'webui': {'port': self.cfg['webui']['port'],
-                          'bind': self.cfg['webui']['bind'],
-                          'auth_required': bool(self.auth_token)},
-                'notifications': list(self.notifications)[:20],
+                "state": worst_ep.state if worst_ep else None,
+                "state_detail": (worst_ep.state_detail if worst_ep else ""),
+                "state_since": (worst_ep.state_since if worst_ep else None),
+                "last_probe_at": (worst_ep.last_probe_at if worst_ep else None),
+                "uptime": time.time() - self.started_at,
+                "interval": self.cfg["interval"],
+                "base": "、".join(e["label"] for e in self.cfg["endpoints"]),
+                "endpoints": eps_out,
+                "channels_active": [c.name for c in self.channels],
+                "webui": {
+                    "port": self.cfg["webui"]["port"],
+                    "bind": self.cfg["webui"]["bind"],
+                    "data_dir": self.cfg["webui"].get("data_dir", "data"),
+                },
+                "notifications": list(self.notifications)[:20],
             }
 
     def masked_config(self):
@@ -528,30 +612,33 @@ class MonitorRuntime:
         """
         with self.lock:
             channels_out = []
-            for item in self.cfg['channels']:
+            for item in self.cfg["channels"]:
                 it = dict(item)
-                for f in SECRET_FIELDS.get(it.get('type'), ()):
+                for f in SECRET_FIELDS.get(it.get("type"), ()):
                     if it.get(f):
                         it[f] = mask_secret(it[f])
                 channels_out.append(it)
             eps_out = []
-            for item in self.cfg['endpoints']:
+            for item in self.cfg["endpoints"]:
                 it = dict(item)
-                if it.get('token'):
-                    it['token'] = mask_secret(it['token'])
+                if it.get("token"):
+                    it["token"] = mask_secret(it["token"])
                 eps_out.append(it)
             return {
-                'interval': self.cfg['interval'],
-                'endpoints': eps_out,
-                'channels': channels_out,
-                'webui': {'port': self.cfg['webui']['port'],
-                          'bind': self.cfg['webui']['bind'],
-                          'token': mask_secret(self.cfg['webui'].get('token', ''))},
+                "interval": self.cfg["interval"],
+                "endpoints": eps_out,
+                "channels": channels_out,
+                "webui": {
+                    "port": self.cfg["webui"]["port"],
+                    "bind": self.cfg["webui"]["bind"],
+                    "data_dir": self.cfg["webui"].get("data_dir", "data"),
+                },
             }
 
 
 def _default_log(msg):
     """默认日志：带时间戳写 stdout（被重定向到文件时即为完整运行日志）。"""
     import sys
-    sys.stdout.write('[%s] %s\n' % (time.strftime('%Y-%m-%d %H:%M:%S'), msg))
+
+    sys.stdout.write("[%s] %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg))
     sys.stdout.flush()

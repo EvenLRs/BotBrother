@@ -3,6 +3,8 @@ config.json
 config.json.bak
 config.json.tmp
 webui.json
+# WebUI 认证数据（密码哈希）
+data/
 
 # ── 运行产物 / 日志 ──
 *.log
@@ -32,3 +34,13 @@ venv/
 .idea/
 .vscode/
 *.swp
+
+# ── Agent 规则文件（本地专属，不入库）──
+/AGENTS.md
+
+# ── macOS launchd 资产（本地保留，发布不含；install.sh 的 launchd 分支已按需手动提供）──
+/macos/
+
+# ── 浏览器验证截图 / 临时产物 ──
+*.png
+!docs/**/*.png

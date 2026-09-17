@@ -17,11 +17,19 @@
     }
   ],
   "channels": [
-    { "type": "log" }
+    {
+      "type": "log"
+    },
+    {
+      "type": "feishu",
+      "app_id": "",
+      "app_secret": "",
+      "chat_id": ""
+    }
   ],
   "webui": {
     "port": 8080,
     "bind": "127.0.0.1",
-    "token": ""
+    "data_dir": "data"
   }
 }

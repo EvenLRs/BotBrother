@@ -19,11 +19,15 @@
 
 import http.client
 import json
+import math
 import socket
 import ssl
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 
 def _header_value(value):
@@ -33,8 +37,8 @@ def _header_value(value):
     仅在需要预检的场景使用（ntfy 中文 Title）。
     """
     try:
-        value.encode('latin-1')
-        return value, True   # (值, 可用urllib)
+        value.encode("latin-1")
+        return value, True  # (值, 可用urllib)
     except UnicodeEncodeError:
         return value, False  # 需要 raw-socket 直发字节
 
@@ -50,8 +54,9 @@ class RecordingTransport:
         self.calls = []
 
     def __call__(self, url, method, headers, data):
-        self.calls.append({'url': url, 'method': method,
-                           'headers': dict(headers), 'data': data})
+        self.calls.append(
+            {"url": url, "method": method, "headers": dict(headers), "data": data}
+        )
         return 200, b'{"ok":true}'
 
 
@@ -63,8 +68,7 @@ class UrllibTransport:
     """
 
     def __call__(self, url, method, headers, data):
-        utf8_headers = {k: v for k, v in headers.items()
-                        if self._needs_raw(v)}
+        utf8_headers = {k: v for k, v in headers.items() if self._needs_raw(v)}
         if not utf8_headers:
             # 常规路径：全部头值 latin-1 安全，urllib 足矣
             req = urllib.request.Request(url, data=data, method=method)
@@ -80,7 +84,7 @@ class UrllibTransport:
         if not isinstance(value, str):
             return False
         try:
-            value.encode('latin-1')
+            value.encode("latin-1")
             return False
         except UnicodeEncodeError:
             return True
@@ -94,7 +98,7 @@ class UrllibTransport:
         except urllib.error.HTTPError as e:
             return e.code, e.read()
         except Exception as e:
-            raise ChannelError('%s 请求失败: %s' % (url, e))
+            raise ChannelError("%s 请求失败: %s" % (url, e))
 
     @staticmethod
     def _httpclient(url, method, headers, data):
@@ -107,43 +111,45 @@ class UrllibTransport:
         """
         parts = urllib.parse.urlsplit(url)
         host = parts.hostname
-        port = parts.port or (443 if parts.scheme == 'https' else 80)
-        path = parts.path or '/'
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        path = parts.path or "/"
         if parts.query:
-            path += '?' + parts.query
+            path += "?" + parts.query
         try:
             sock = socket.create_connection((host, port), timeout=10)
-            if parts.scheme == 'https':
+            if parts.scheme == "https":
                 ctx = ssl.create_default_context()
                 sock = ctx.wrap_socket(sock, server_hostname=host)
             # 逐行拼请求；头值原样（含 UTF-8 中文）整体 encode 成字节
-            lines = ['%s %s HTTP/1.1' % (method, path),
-                     'Host: %s' % parts.netloc,
-                     'Connection: close']
+            lines = [
+                "%s %s HTTP/1.1" % (method, path),
+                "Host: %s" % parts.netloc,
+                "Connection: close",
+            ]
             for k, v in headers.items():
-                lines.append('%s: %s' % (k, v))
+                lines.append("%s: %s" % (k, v))
             if data is not None:
-                body = data if isinstance(data, bytes) else data.encode('utf-8')
-                lines.append('Content-Length: %d' % len(body))
+                body = data if isinstance(data, bytes) else data.encode("utf-8")
+                lines.append("Content-Length: %d" % len(body))
             else:
-                body = b''
-            payload = '\r\n'.join(lines).encode('utf-8') + b'\r\n\r\n' + body
+                body = b""
+            payload = "\r\n".join(lines).encode("utf-8") + b"\r\n\r\n" + body
             sock.sendall(payload)
             # 读完整应答（Connection: close 保证服务器会主动断，循环自然结束）
-            resp = b''
+            resp = b""
             while True:
                 chunk = sock.recv(4096)
                 if not chunk:
                     break
                 resp += chunk
             sock.close()
-            status = int(resp.split(b' ', 2)[1])          # "HTTP/1.1 200 ..." → 200
-            _, _, respbody = resp.partition(b'\r\n\r\n')   # 头体分隔
+            status = int(resp.split(b" ", 2)[1])  # "HTTP/1.1 200 ..." → 200
+            _, _, respbody = resp.partition(b"\r\n\r\n")  # 头体分隔
             return status, respbody
         except ChannelError:
             raise
         except Exception as e:
-            raise ChannelError('%s 请求失败: %s' % (url, e))
+            raise ChannelError("%s 请求失败: %s" % (url, e))
 
 
 class Channel:
@@ -155,7 +161,7 @@ class Channel:
         失败抛 ChannelError；不覆盖则 2xx 即成功
     """
 
-    name = 'channel'
+    name = "channel"
 
     def __init__(self, transport=None):
         self.transport = transport if transport is not None else UrllibTransport()
@@ -165,7 +171,7 @@ class Channel:
         url, method, headers, data = self._request(title, body)
         status, resp = self.transport(url, method, headers, data)
         if status >= 300:
-            raise ChannelError('%s 应答 HTTP %d: %s' % (self.name, status, resp[:200]))
+            raise ChannelError("%s 应答 HTTP %d: %s" % (self.name, status, resp[:200]))
         self._verify(status, resp)
 
     def _request(self, title, body):
@@ -178,24 +184,29 @@ class Channel:
 # ======================= 七个真实渠道 + 一个本地渠道 =======================
 # 每个渠道一个类；构造参数与 config.json channels[] 里的字段一一对应。
 
+
 class BarkChannel(Channel):
     """Bark（iOS 推送）：GET {server}/{key}/{标题}/{内容}。
 
     标题和内容做路径段 URL 编码（斜杠/空格/中文都不能裸进 URL）。
     """
 
-    name = 'bark'
+    name = "bark"
 
-    def __init__(self, key, server='https://api.day.app', transport=None):
+    def __init__(self, key, server="https://api.day.app", transport=None):
         super().__init__(transport)
         self.key = key
-        self.server = server.rstrip('/')
+        self.server = server.rstrip("/")
 
     def _request(self, title, body):
         q = urllib.parse.quote
-        url = '%s/%s/%s/%s' % (self.server, q(self.key, safe=''),
-                               q(title, safe=''), q(body, safe=''))
-        return url, 'GET', {}, None
+        url = "%s/%s/%s/%s" % (
+            self.server,
+            q(self.key, safe=""),
+            q(title, safe=""),
+            q(body, safe=""),
+        )
+        return url, "GET", {}, None
 
 
 class WecomWebhookChannel(Channel):
@@ -204,25 +215,28 @@ class WecomWebhookChannel(Channel):
     应答校验：errcode 字段非 0 视为失败（假 key 实测返回 93000）。
     """
 
-    name = 'wecom'
+    name = "wecom"
 
     def __init__(self, key, transport=None):
         super().__init__(transport)
         self.key = key
 
     def _request(self, title, body):
-        url = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=%s' % self.key
-        payload = json.dumps({'msgtype': 'text',
-                              'text': {'content': title + '\n' + body}}).encode('utf-8')
-        return url, 'POST', {'Content-Type': 'application/json'}, payload
+        url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=%s" % self.key
+        payload = json.dumps(
+            {"msgtype": "text", "text": {"content": title + "\n" + body}}
+        ).encode("utf-8")
+        return url, "POST", {"Content-Type": "application/json"}, payload
 
     def _verify(self, status, resp):
         try:
-            data = json.loads(resp.decode('utf-8'))
+            data = json.loads(resp.decode("utf-8"))
         except Exception:
             return  # 非 JSON 应答，2xx 已由基类兜住
-        if data.get('errcode') not in (0, None):
-            raise ChannelError('wecom errcode=%s: %s' % (data.get('errcode'), data.get('errmsg')))
+        if data.get("errcode") not in (0, None):
+            raise ChannelError(
+                "wecom errcode=%s: %s" % (data.get("errcode"), data.get("errmsg"))
+            )
 
 
 class DingTalkChannel(Channel):
@@ -232,49 +246,275 @@ class DingTalkChannel(Channel):
     需要 HMAC-SHA256 时间戳签名拼 URL）。
     """
 
-    name = 'dingtalk'
+    name = "dingtalk"
 
     def __init__(self, access_token, transport=None):
         super().__init__(transport)
         self.access_token = access_token
 
     def _request(self, title, body):
-        url = 'https://oapi.dingtalk.com/robot/send?access_token=%s' % self.access_token
-        payload = json.dumps({'msgtype': 'text',
-                              'text': {'content': title + '\n' + body}}).encode('utf-8')
-        return url, 'POST', {'Content-Type': 'application/json'}, payload
+        url = "https://oapi.dingtalk.com/robot/send?access_token=%s" % self.access_token
+        payload = json.dumps(
+            {"msgtype": "text", "text": {"content": title + "\n" + body}}
+        ).encode("utf-8")
+        return url, "POST", {"Content-Type": "application/json"}, payload
 
     def _verify(self, status, resp):
         try:
-            data = json.loads(resp.decode('utf-8'))
+            data = json.loads(resp.decode("utf-8"))
         except Exception:
             return
-        if data.get('errcode') not in (0, None):
-            raise ChannelError('dingtalk errcode=%s: %s' % (data.get('errcode'), data.get('errmsg')))
+        if data.get("errcode") not in (0, None):
+            raise ChannelError(
+                "dingtalk errcode=%s: %s" % (data.get("errcode"), data.get("errmsg"))
+            )
 
 
-class FeishuChannel(Channel):
-    """飞书自定义机器人 webhook：POST JSON，msg_type=text + content.text 结构。"""
+# --------------------------------------------------------------------------- #
+# 飞书应用机器人（自建应用，tenant_access_token + im/v1/messages）
+# 官方依据：
+#   - 获取 tenant_access_token：POST /open-apis/auth/v3/tenant_access_token/internal
+#     （body: app_id/app_secret；应答 code/msg/tenant_access_token/expire 秒）
+#   - 发送消息：POST /open-apis/im/v1/messages?receive_id_type=chat_id
+#     （Authorization: Bearer <tenant_access_token>；body: receive_id=配置的 chat_id/msg_type/content/uuid）
+#   - 配置固定为 app_id + app_secret + chat_id（本工具只支持群会话 chat_id）
+#   - token 失效错误码（服务端通用错误码）：99991661 / 99991663 / 99991665
+#   - uuid 官方支持 1 小时内请求去重（用于“刷新后重试一次”不产生重复消息）
+# --------------------------------------------------------------------------- #
+FEISHU_BASE = "https://open.feishu.cn"
+FEISHU_TENANT_TOKEN_PATH = "/open-apis/auth/v3/tenant_access_token/internal"
+FEISHU_SEND_PATH = "/open-apis/im/v1/messages"
+FEISHU_RECEIVE_ID_TYPE = "chat_id"  # 本工具固定使用群会话 ID
+FEISHU_TOKEN_INVALID_CODES = frozenset({99991661, 99991663, 99991665})
+FEISHU_TOKEN_REFRESH_BUFFER_SECONDS = 60
+# 官方：tenant_access_token 最长有效期 2 小时；超出按上限安全收敛
+FEISHU_TOKEN_MAX_EXPIRE_SECONDS = 7200
 
-    name = 'feishu'
+# 仅按已知错误码给出安全建议，不原样拼接平台 msg（可能含敏感回显）
+_FEISHU_CODE_HINTS = {
+    10014: "应用状态不可用（是否已停用？）",
+    10015: "App Secret 错误，请核对开发者后台",
+    20005: "access_token 无效",
+    20013: "tenant_access_token 无效",
+    230002: "机器人不在目标群，请先把应用机器人拉进群",
+    230006: "应用未启用机器人能力",
+    230013: "目标用户/群不在应用可用范围内",
+    230027: "缺少发送消息权限，请在开发者后台申请并发布",
+    230034: "receive_id 非法或与 receive_id_type 不匹配",
+    230035: "无发送权限（群禁言/用户拒收/租户管控等）",
+    99991661: "缺少或无效的 access token",
+    99991663: "tenant_access_token 已失效",
+    99991665: "tenant_access_token 非法",
+}
 
-    def __init__(self, hook_id, transport=None):
+
+def describe_feishu_code(code) -> str:
+    """把业务码转成安全摘要（绝不回显平台 msg，避免敏感内容外泄）。"""
+    hint = _FEISHU_CODE_HINTS.get(code)
+    if hint:
+        return "feishu 业务失败 code=%s（%s）" % (code, hint)
+    return "feishu 业务失败 code=%s（详情见开发者后台/运行日志）" % code
+
+
+def _coerce_expire(value):
+    """expire 必须是非 bool 的正有限数；超出官方上限时收敛到上限。非法返回 None。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        return None
+    if not math.isfinite(number) or number <= 0:
+        return None
+    return int(min(number, FEISHU_TOKEN_MAX_EXPIRE_SECONDS))
+
+
+class FeishuAppChannel(Channel):
+    """飞书应用机器人渠道（废弃原 webhook 自定义机器人实现）。
+
+    凭据（App ID / App Secret）只能获取 tenant_access_token，**不能定位接收者**；
+    必须另行配置群会话 chat_id。token 带过期缓冲缓存，刷新有并发保护；
+    仅当业务返回明确的“token 失效”错误码时刷新并重试一次（同 uuid 幂等）。
+    """
+
+    name = "feishu"
+
+    def __init__(
+        self,
+        app_id,
+        app_secret,
+        chat_id="",
+        transport=None,
+        base=FEISHU_BASE,
+    ):
         super().__init__(transport)
+        self.app_id = app_id
+        self.app_secret = app_secret
+        self.chat_id = chat_id
+        self.receive_id_type = FEISHU_RECEIVE_ID_TYPE  # 固定 chat_id
+        self.base = base.rstrip("/")
+        self._token = None
+        self._token_expire_at = 0.0
+        self._lock = threading.RLock()
+
+    # ---- token 获取/缓存 ----
+    def _fetch_token(self):
+        url = self.base + FEISHU_TENANT_TOKEN_PATH
+        body = json.dumps(
+            {"app_id": self.app_id, "app_secret": self.app_secret}
+        ).encode("utf-8")
+        status, resp = self.transport(
+            url, "POST", {"Content-Type": "application/json; charset=utf-8"}, body
+        )
+        data = self._decode_json(resp)
+        code = data.get("code") if isinstance(data, dict) else None
+        # 严格：业务码必须是 int 且恰为 0；缺码/非 int/bool 一律按形态错误处理
+        if type(code) is not int:
+            if status >= 300:
+                raise ChannelError(
+                    "feishu 获取 tenant_access_token 失败：HTTP %d（应答缺少合法 code）"
+                    % status
+                )
+            raise ChannelError("feishu tenant_access_token 应答缺少合法 code")
+        if code != 0:
+            raise ChannelError(describe_feishu_code(code))
+        token = data.get("tenant_access_token")
+        if not isinstance(token, str) or not token.strip():
+            raise ChannelError("feishu tenant_access_token 应答缺少合法 token 字段")
+        expire = _coerce_expire(data.get("expire"))
+        if expire is None:
+            raise ChannelError("feishu tenant_access_token 应答 expire 非法")
+        with self._lock:
+            self._token = token
+            self._token_expire_at = time.time() + expire
+        return token
+
+    def _get_token(self, force=False, stale=None):
+        """取 token。force=True 时：若当前缓存已不是本次使用的 stale token，
+        说明其它请求已刷新，直接复用，避免并发重复刷新。
+        """
+        now = time.time()
+        if (
+            not force
+            and self._token
+            and now < self._token_expire_at - FEISHU_TOKEN_REFRESH_BUFFER_SECONDS
+        ):
+            return self._token
+        with self._lock:  # 并发保护：同一时刻只允许一个刷新
+            if force and stale is not None and self._token and self._token != stale:
+                return self._token  # 已被其它请求刷新
+            now = time.time()
+            if (
+                not force
+                and self._token
+                and now < self._token_expire_at - FEISHU_TOKEN_REFRESH_BUFFER_SECONDS
+            ):
+                return self._token
+            return self._fetch_token()
+
+    @staticmethod
+    def _decode_json(resp):
+        try:
+            return json.loads(resp.decode("utf-8"))
+        except Exception:
+            return None
+
+    # ---- 发送 ----
+    def _send_once(self, text, token, msg_uuid):
+        """发一次；返回业务 code（0 表示成功）。形态/HTTP 错误抛 ChannelError。"""
+        query = urllib.parse.urlencode({"receive_id_type": FEISHU_RECEIVE_ID_TYPE})
+        url = "%s%s?%s" % (self.base, FEISHU_SEND_PATH, query)
+        payload = {
+            "receive_id": self.chat_id,
+            "msg_type": "text",
+            "content": json.dumps({"text": text}, ensure_ascii=False),
+            "uuid": msg_uuid,  # 官方 1 小时去重：重试复用同一 uuid
+        }
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "Authorization": "Bearer " + token,
+        }
+        status, resp = self.transport(
+            url,
+            "POST",
+            headers,
+            json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        )
+        data = self._decode_json(resp)
+        code = data.get("code") if isinstance(data, dict) else None
+        # 先按业务码判定（官方错误常为 HTTP 非 2xx + code），避免 HTTP 提前退出
+        # 掩盖可恢复的 token 失效。
+        if type(code) is not int:
+            if status >= 300:
+                raise ChannelError(
+                    "feishu 发送失败：HTTP %d（应答缺少合法 code）" % status
+                )
+            raise ChannelError("feishu 发送应答缺少合法 code")
+        if code != 0:
+            return code
+        payload_data = data.get("data")
+        message_id = (
+            payload_data.get("message_id") if isinstance(payload_data, dict) else None
+        )
+        if not isinstance(message_id, str) or not message_id.strip():
+            raise ChannelError("feishu 发送应答缺少合法 message_id")
+        return 0
+
+    def send(self, title, body):
+        if not self.chat_id:
+            raise ChannelError(
+                "feishu 未配置群会话 chat_id（App 凭据无法定位接收者，请填写 chat_id）。"
+            )
+        text = title + "\n" + body
+        msg_uuid = uuid.uuid4().hex  # 同一次发送（含唯一一次重试）共用，供官方去重
+        used_token = self._get_token()
+        code = self._send_once(text, used_token, msg_uuid)
+        if code in FEISHU_TOKEN_INVALID_CODES:
+            # 仅明确的 token 失效才刷新；同一请求只重试一次（同 uuid）。
+            # 若并发中已被其它请求换新，则复用其新 token，不再重复刷新。
+            used_token = self._get_token(force=True, stale=used_token)
+            code = self._send_once(text, used_token, msg_uuid)
+        if code != 0:
+            raise ChannelError(describe_feishu_code(code))
+
+
+class LegacyFeishuWebhookChannel:
+    """旧版飞书 webhook（hook_id）占位：保留配置与掩码，发送时提示迁移。
+
+    目的：旧配置不被静默丢弃，也不会让单个旧渠道阻断监视或其它渠道。
+    """
+
+    name = "feishu"
+
+    def __init__(self, hook_id=""):
         self.hook_id = hook_id
 
-    def _request(self, title, body):
-        url = 'https://open.feishu.cn/open-apis/bot/v2/hook/%s' % self.hook_id
-        payload = json.dumps({'msg_type': 'text',
-                              'content': {'text': title + '\n' + body}}).encode('utf-8')
-        return url, 'POST', {'Content-Type': 'application/json'}, payload
+    def send(self, title, body):
+        raise ChannelError(
+            "飞书 Webhook 渠道已废弃：请在 WebUI 将“飞书”渠道改为“飞书应用机器人”"
+            "并填写 App ID、App Secret、接收者类型与 ID 后保存。"
+        )
 
-    def _verify(self, status, resp):
-        try:
-            data = json.loads(resp.decode('utf-8'))
-        except Exception:
-            return
-        if data.get('code') not in (0, None):
-            raise ChannelError('feishu code=%s: %s' % (data.get('code'), data.get('msg')))
+
+class LegacyFeishuMisconfiguredChannel:
+    """旧配置使用了非 chat_id 的接收者类型：保留 App 凭据，但明确要求重填 chat_id。
+
+    不得把用户 ID（open_id/user_id/union_id/email）静默当作 chat_id 投递。
+    """
+
+    name = "feishu"
+
+    def __init__(self, app_id="", app_secret="", receive_id_type=""):
+        self.app_id = app_id
+        self.app_secret = app_secret
+        self.receive_id_type = receive_id_type
+
+    def send(self, title, body):
+        raise ChannelError(
+            "飞书旧配置的接收者类型为 %s，本工具仅支持群会话 chat_id："
+            "请在 WebUI 重新填写 chat_id 后保存（不会把用户 ID 当作 chat_id 投递）。"
+            % (self.receive_id_type or "未知")
+        )
 
 
 class NtfyChannel(Channel):
@@ -284,17 +524,17 @@ class NtfyChannel(Channel):
     （见模块头部传输层设计说明）。server 参数可指向自建实例。
     """
 
-    name = 'ntfy'
+    name = "ntfy"
 
-    def __init__(self, topic, server='https://ntfy.sh', transport=None):
+    def __init__(self, topic, server="https://ntfy.sh", transport=None):
         super().__init__(transport)
         self.topic = topic
-        self.server = server.rstrip('/')
+        self.server = server.rstrip("/")
 
     def _request(self, title, body):
-        url = '%s/%s' % (self.server, urllib.parse.quote(self.topic, safe=''))
+        url = "%s/%s" % (self.server, urllib.parse.quote(self.topic, safe=""))
         # Title 头原样传中文；非 latin-1 头值由 UrllibTransport 自动切 raw-socket
-        return url, 'POST', {'Title': title}, body.encode('utf-8')
+        return url, "POST", {"Title": title}, body.encode("utf-8")
 
 
 class TelegramChannel(Channel):
@@ -303,7 +543,7 @@ class TelegramChannel(Channel):
     应答校验：ok 字段为 false 视为失败（假 token 实测 401 Unauthorized）。
     """
 
-    name = 'telegram'
+    name = "telegram"
 
     def __init__(self, bot_token, chat_id, transport=None):
         super().__init__(transport)
@@ -311,41 +551,54 @@ class TelegramChannel(Channel):
         self.chat_id = chat_id
 
     def _request(self, title, body):
-        url = 'https://api.telegram.org/bot%s/sendMessage' % self.bot_token
-        form = urllib.parse.urlencode({'chat_id': self.chat_id,
-                                       'text': title + '\n' + body})
-        return url, 'POST', {'Content-Type': 'application/x-www-form-urlencoded'}, form.encode('utf-8')
+        url = "https://api.telegram.org/bot%s/sendMessage" % self.bot_token
+        form = urllib.parse.urlencode(
+            {"chat_id": self.chat_id, "text": title + "\n" + body}
+        )
+        return (
+            url,
+            "POST",
+            {"Content-Type": "application/x-www-form-urlencoded"},
+            form.encode("utf-8"),
+        )
 
     def _verify(self, status, resp):
         try:
-            data = json.loads(resp.decode('utf-8'))
+            data = json.loads(resp.decode("utf-8"))
         except Exception:
             return
-        if data.get('ok') is False:
-            raise ChannelError('telegram: %s' % data.get('description'))
+        if data.get("ok") is False:
+            raise ChannelError("telegram: %s" % data.get("description"))
 
 
 class ServerChanChannel(Channel):
     """Server 酱 Turbo（微信推送）：POST {send_key}.send，表单 title + desp。"""
 
-    name = 'serverchan'
+    name = "serverchan"
 
     def __init__(self, send_key, transport=None):
         super().__init__(transport)
         self.send_key = send_key
 
     def _request(self, title, body):
-        url = 'https://sctapi.ftqq.com/%s.send' % self.send_key
-        form = urllib.parse.urlencode({'title': title, 'desp': body})
-        return url, 'POST', {'Content-Type': 'application/x-www-form-urlencoded'}, form.encode('utf-8')
+        url = "https://sctapi.ftqq.com/%s.send" % self.send_key
+        form = urllib.parse.urlencode({"title": title, "desp": body})
+        return (
+            url,
+            "POST",
+            {"Content-Type": "application/x-www-form-urlencoded"},
+            form.encode("utf-8"),
+        )
 
     def _verify(self, status, resp):
         try:
-            data = json.loads(resp.decode('utf-8'))
+            data = json.loads(resp.decode("utf-8"))
         except Exception:
             return
-        if data.get('code') not in (0, None):
-            raise ChannelError('serverchan code=%s: %s' % (data.get('code'), data.get('message')))
+        if data.get("code") not in (0, None):
+            raise ChannelError(
+                "serverchan code=%s: %s" % (data.get("code"), data.get("message"))
+            )
 
 
 class LogChannel:
@@ -355,27 +608,27 @@ class LogChannel:
     保证通知记录不为空。不是 Channel 子类——没有网络请求，不需要 transport。
     """
 
-    name = 'log'
+    name = "log"
 
     def __init__(self, log=None):
         self.log = log if log is not None else print
 
     def send(self, title, body):
         # 换行折成 ' / '，保证单行日志可 grep
-        self.log('[log-channel] %s | %s' % (title, body.replace('\n', ' / ')))
+        self.log("[log-channel] %s | %s" % (title, body.replace("\n", " / ")))
 
 
 # 渠道类型注册表：config.json channels[].type 的字符串 → 类。
 # 新增渠道 = 写类 + 在这里登记，其余零改动。
 CHANNEL_TYPES = {
-    'bark': BarkChannel,
-    'wecom': WecomWebhookChannel,
-    'dingtalk': DingTalkChannel,
-    'feishu': FeishuChannel,
-    'ntfy': NtfyChannel,
-    'telegram': TelegramChannel,
-    'serverchan': ServerChanChannel,
-    'log': LogChannel,
+    "bark": BarkChannel,
+    "wecom": WecomWebhookChannel,
+    "dingtalk": DingTalkChannel,
+    "feishu": FeishuAppChannel,
+    "ntfy": NtfyChannel,
+    "telegram": TelegramChannel,
+    "serverchan": ServerChanChannel,
+    "log": LogChannel,
 }
 
 
@@ -388,13 +641,47 @@ def build_channels(config_list, transport=None, log=None):
     """
     channels = []
     for item in config_list or []:
-        ctype = item.get('type')
+        ctype = item.get("type")
         cls = CHANNEL_TYPES.get(ctype)
         if cls is None:
-            raise ValueError('未知渠道类型: %r' % ctype)
-        params = {k: v for k, v in item.items() if k != 'type'}
-        if ctype == 'log':
+            raise ValueError("未知渠道类型: %r" % ctype)
+        params = {k: v for k, v in item.items() if k != "type"}
+        if ctype == "log":
             channels.append(LogChannel(log=log))
+        elif ctype == "feishu":
+            has_app = bool(
+                str(item.get("app_id", "")).strip()
+                or str(item.get("app_secret", "")).strip()
+            )
+            chat_id = str(item.get("chat_id", "")).strip()
+            legacy_receive = str(item.get("receive_id", "")).strip()
+            legacy_type = str(
+                item.get("receive_id_type", "chat_id") or "chat_id"
+            ).strip()
+            if not chat_id and legacy_receive and legacy_type == "chat_id":
+                chat_id = legacy_receive  # 旧 chat_id 配置无损归一
+            if has_app:
+                if not chat_id and legacy_receive and legacy_type != "chat_id":
+                    channels.append(
+                        LegacyFeishuMisconfiguredChannel(
+                            app_id=item.get("app_id", ""),
+                            app_secret=item.get("app_secret", ""),
+                            receive_id_type=legacy_type,
+                        )
+                    )
+                else:
+                    channels.append(
+                        FeishuAppChannel(
+                            app_id=item.get("app_id", ""),
+                            app_secret=item.get("app_secret", ""),
+                            chat_id=chat_id,
+                            transport=transport,
+                        )
+                    )
+            else:
+                channels.append(
+                    LegacyFeishuWebhookChannel(hook_id=item.get("hook_id", ""))
+                )
         else:
             channels.append(cls(transport=transport, **params))
     return channels

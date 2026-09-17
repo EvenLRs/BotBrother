@@ -10,11 +10,14 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 
 echo "安装到 $DEST ..."
 mkdir -p "$DEST"
-cp monitor.py probe.py statemachine.py channels.py "$DEST/"
+cp monitor.py probe.py statemachine.py channels.py runtime.py webui.py webui.html auth.py "$DEST/"
+mkdir -p "$DEST/data"
 if [ ! -f "$DEST/config.json" ]; then
     cp config.example.json "$DEST/config.json"
-    echo "已生成 $DEST/config.json —— 记得改 probe.base/channels 再启动"
+    echo "已生成 $DEST/config.json —— 记得改 endpoints.base/channels 再启动"
 fi
+echo "WebUI 首次访问将提示设置登录密码（保存在 $DEST/data/webui_auth.json）；"
+echo "忘记密码可在本机运行： python3 $DEST/monitor.py --config $DEST/config.json --reset-webui-password"
 
 # systemd（Linux）
 if command -v systemctl >/dev/null 2>&1; then

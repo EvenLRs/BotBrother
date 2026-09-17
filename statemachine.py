@@ -19,9 +19,11 @@ import probe
 # ---- 三种通知文案（单条完整文案，含 [BotBrother] 前缀与 self_id 占位）----
 # 产品拍板：告警只发这一句话；self_id 为机器人 QQ 号，探测失败拿不到时留空。
 
-OFFLINE_ALERT = '[BotBrother] 警告：{self_id}账号离线。如本次离线为您主动触发，请忽略本信息。'
-SERVICE_ALERT = '[BotBrother] 警告：{self_id}所在客户端连接失败，请检查客户端是否离线。'
-RECOVERY_NOTICE = '[BotBrother] {self_id}已恢复在线。'
+OFFLINE_ALERT = (
+    "[BotBrother] 警告：{self_id}账号离线。如本次离线为您主动触发，请忽略本信息。"
+)
+SERVICE_ALERT = "[BotBrother] 警告：{self_id}所在客户端连接失败，请检查客户端是否离线。"
+RECOVERY_NOTICE = "[BotBrother] {self_id}已恢复在线。"
 
 
 class MonitorStateMachine:
@@ -45,7 +47,7 @@ class MonitorStateMachine:
         self._unreachable_alerted = False
         self._ever_alerted = False
 
-    def feed(self, state, detail='', self_id=''):
+    def feed(self, state, detail="", self_id=""):
         """处理一轮探测结果，返回该轮应发通知列表（[str]）。
 
         分支顺序就是业务优先级：online 收尾一切；offline/unreachable
@@ -75,10 +77,13 @@ class MonitorStateMachine:
             # 服务不可达：镜像 offline 的逻辑
             self._offline_count = 0
             self._unreachable_count += 1
-            if self._unreachable_count >= self.debounce and not self._unreachable_alerted:
+            if (
+                self._unreachable_count >= self.debounce
+                and not self._unreachable_alerted
+            ):
                 self._unreachable_alerted = True
                 self._ever_alerted = True
                 return [SERVICE_ALERT.format(self_id=self_id)]
             return []
         # 防御：probe 之外的来源喂进来的未知状态，宁可炸出来也不静默吞
-        raise ValueError('未知状态: %r' % state)
+        raise ValueError("未知状态: %r" % state)
