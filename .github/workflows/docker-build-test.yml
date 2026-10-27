@@ -7,6 +7,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: docker-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
   # GHCR 要求全小写；github.repository 可能含大写（如 EvenLRs/BotBrother）
@@ -46,6 +50,10 @@ jobs:
       # ---------- 构建测试镜像（单架构 + load 进本地 docker 供容器测试用） ----------
       # 注意：buildx 的 docker exporter 不支持多架构 manifest list，
       # 所以测试阶段只构 amd64；双架构构建放在最后的推送步（push 直出 registry）。
+      - name: Set up QEMU (multi-arch for push)
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -205,13 +213,9 @@ jobs:
           if [ "$RC" -ne 1 ]; then echo "[FAIL] expected exit 1, got $RC"; exit 1; fi
           echo "[PASS] --once exits 1 when unreachable"
 
-      # ---------- 推送 GHCR（仅 main 分支；PR 只构建不推送） ----------
-      - name: Set up QEMU (multi-arch for push)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/setup-qemu-action@v3
-
+      # ---------- 推送 GHCR（main 分支推送或手动运行；PR 只构建不推送） ----------
       - name: Log in to GHCR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -219,11 +223,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Compute lowercase image name
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         run: echo "IMAGE_LC=${IMAGE_NAME,,}" >> $GITHUB_ENV
 
       - name: Push to GHCR (main only)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: .
